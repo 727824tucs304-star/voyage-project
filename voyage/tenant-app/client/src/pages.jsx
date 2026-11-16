@@ -22,7 +22,7 @@ export function Card({ children, className = '' }) {
 
 export function Button({ variant = 'primary', className = '', ...props }) {
   const styles = {
-    primary: 'bg-blue-600 text-white hover:bg-blue-700',
+        primary: 'bg-green-600 text-white hover:bg-green-700',
     ghost: 'border border-slate-200 text-slate-700 hover:bg-slate-50',
     danger: 'text-red-600 hover:bg-red-50',
   };
@@ -226,7 +226,7 @@ function ResourcePage({ title, listUrl, createUrl, itemPath, fields, columns, em
         {createUrl && (
           <Button onClick={() => setEditing({})}>
             <Plus className="h-4 w-4" />
-            Add
+            Add 
           </Button>
         )}
       </PageHeader>
