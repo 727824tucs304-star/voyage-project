@@ -1,0 +1,472 @@
+// End-to-end test: five tenants through the real control plane, with real PostgreSQL,
+// real tenant app processes, real bcrypt/JWT and real `nginx -t`.
+// Docker itself is replaced by fake-docker.mjs (see its header).
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import http from 'node:http';
+import crypto from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
+import pg from 'pg';
+import { startFakeDocker } from './fake-docker.mjs';
+
+const REPO = path.resolve(import.meta.dirname, '..', '..');
+const TENANT_ENTRY = path.join(REPO, 'tenant-app', 'server', 'index.js');
+const CONTROL_DIR = path.join(REPO, 'control-plane');
+const WORK = '/tmp/voyage-test';
+const SOCK = path.join(WORK, 'docker.sock');
+const CONTROL_PORT = 4100;
+const CONTROL = `http://127.0.0.1:${CONTROL_PORT}`;
+const ADMIN_TOKEN = crypto.randomBytes(24).toString('hex');
+const PROV_PW = `prov${crypto.randomBytes(8).toString('hex')}`;
+const PASSWORD = 'SecurePass123';
+
+// Clear leftovers from any previous crashed run (stale control plane / tenant processes / hosts entries).
+execFileSync('bash', ['-c', 'pkill -KILL -f "[t]enant-app/server/index.js"; pkill -KILL -f "[s]rc/index.js"; true']);
+{
+  const kept = fs.readFileSync('/etc/hosts', 'utf8').split('\n').filter((l) => !l.includes('# voyage-test'));
+  fs.writeFileSync('/etc/hosts', kept.join('\n'));
+}
+fs.rmSync(WORK, { recursive: true, force: true });
+fs.mkdirSync(path.join(WORK, 'tenants'), { recursive: true });
+fs.mkdirSync(path.join(WORK, 'logs'), { recursive: true });
+
+// nginx main config for this host: the real config with the tenant include pointed at WORK.
+const nginxMain = path.join(WORK, 'nginx-main.conf');
+fs.writeFileSync(nginxMain, fs.readFileSync(path.join(REPO, 'nginx', 'nginx.conf'), 'utf8')
+  .replace('/etc/nginx/tenants/*.conf', `${WORK}/tenants/*.conf`)
+  .replace('pid /var/run/nginx.pid;', `pid ${WORK}/nginx.pid;`));
+
+// ---------- Postgres: fresh control DB + provisioner role (same statements as postgres/init) ----------
+const psql = (sql) => execFileSync('runuser', ['-u', 'postgres', '--', 'psql', '-v', 'ON_ERROR_STOP=1', '-q', '-d', 'postgres', '-c', sql], { stdio: 'pipe' });
+const listSql = (sql) => execFileSync('runuser', ['-u', 'postgres', '--', 'psql', '-tA', '-d', 'postgres', '-c', sql], { encoding: 'utf8' })
+  .split('\n').map((l) => l.trim()).filter(Boolean);
+for (const db of listSql("SELECT datname FROM pg_database WHERE datname LIKE 'tenant\\_%'")) psql(`DROP DATABASE IF EXISTS "${db}"`);
+for (const role of listSql("SELECT rolname FROM pg_roles WHERE rolname LIKE 'tenant\\_%'")) psql(`DROP ROLE IF EXISTS "${role}"`);
+psql('DROP DATABASE IF EXISTS voyage_control');
+psql('DROP ROLE IF EXISTS voyage_provisioner');
+psql(`CREATE ROLE voyage_provisioner LOGIN CREATEDB CREATEROLE PASSWORD '${PROV_PW}'`);
+psql('CREATE DATABASE voyage_control OWNER voyage_provisioner');
+
+const CONTROL_DB = `postgres://voyage_provisioner:${PROV_PW}@127.0.0.1:5432/voyage_control`;
+const controlDb = new pg.Client({ connectionString: CONTROL_DB });
+await controlDb.connect();
+
+// ---------- Start the fake Docker engine and the real control plane ----------
+const fake = startFakeDocker({ socketPath: SOCK, tenantEntry: TENANT_ENTRY, nginxMain, logDir: path.join(WORK, 'logs') });
+const control = spawn(process.execPath, ['src/index.js'], {
+  cwd: CONTROL_DIR,
+  env: {
+    PATH: process.env.PATH,
+    PORT: String(CONTROL_PORT),
+    BASE_DOMAIN: 'localhost',
+    WORKSPACE_SCHEME: 'http',
+    CONTROL_DB_URL: CONTROL_DB,
+    TENANT_PG_HOST: '127.0.0.1',
+    TENANT_PG_PORT: '5432',
+    CONTROL_SECRET: crypto.randomBytes(32).toString('hex'),
+    ADMIN_TOKEN,
+    DOCKER_SOCKET: SOCK,
+    DOCKER_NETWORK: 'voyage-net',
+    TENANT_IMAGE_REPO: 'voyage-tenant',
+    TENANT_DEFAULT_VERSION: 'v1',
+    NGINX_CONTAINER: 'voyage-nginx',
+    NGINX_TENANT_DIR: path.join(WORK, 'tenants'),
+    HEALTH_TIMEOUT_MS: '60000',
+  },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+let controlLog = '';
+process.on('exit', () => fs.writeFileSync('/tmp/control.log', controlLog));
+control.stdout.on('data', (d) => (controlLog += d));
+control.stderr.on('data', (d) => (controlLog += d));
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function call(method, url, { body, token, headers: extra = {} } = {}) {
+  const headers = { ...extra };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const r = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+  const data = r.status === 204 ? null : await r.json().catch(() => null);
+  return { status: r.status, data };
+}
+const ctl = (method, p, opts) => call(method, `${CONTROL}${p}`, opts);
+const adminOpts = { token: ADMIN_TOKEN };
+const tenantApi = (slug, method, p, opts) => call(method, `http://voyage-tenant-${slug}:3000/api${p}`, opts);
+
+function dockerApi(method, p) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: SOCK, method, path: p }, (res) => {
+      let d = '';
+      res.on('data', (c) => (d += c));
+      res.on('end', () => resolve({ status: res.statusCode, data: d ? JSON.parse(d) : null }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function waitFor(fn, label, timeoutMs = 120000) {
+  const end = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < end) {
+    try {
+      last = await fn();
+    } catch (err) {
+      last = err.message;
+      if (String(err.message).includes('failed:')) throw err;
+    }
+    if (last && typeof last === 'object') return last;
+    if (last === true) return last;
+    await sleep(1000);
+  }
+  throw new Error(`timed out waiting for ${label} (last: ${JSON.stringify(last)})`);
+}
+
+const waitReady = (slug) =>
+  waitFor(async () => {
+    const { data } = await ctl('GET', `/api/tenants/${slug}`);
+    if (data?.status === 'failed') throw new Error(`${slug} provisioning failed: ${data.errorMessage}`);
+    return data?.status === 'ready' ? data : null;
+  }, `${slug} ready`);
+
+const adminRow = async (slug) => (await ctl('GET', '/api/admin/tenants', adminOpts)).data.find((t) => t.slug === slug);
+
+const waitAdminReady = (slug, version) =>
+  waitFor(async () => {
+    const row = await adminRow(slug);
+    if (row?.status === 'failed') throw new Error(`${slug} update failed: ${row.errorMessage}`);
+    return row?.status === 'ready' && row.version === version ? row : null;
+  }, `${slug} on ${version}`);
+
+// Wait for the control plane to come up; if it dies, show why and stop.
+let exited = null;
+control.on('exit', (code) => (exited = code));
+for (let i = 0; i < 120; i++) {
+  if (exited !== null) break;
+  try {
+    if ((await fetch(`${CONTROL}/healthz`)).ok) break;
+  } catch { /* not listening yet */ }
+  await sleep(500);
+}
+if (exited !== null || !(await fetch(`${CONTROL}/healthz`).then((r) => r.ok).catch(() => false))) {
+  console.log('control plane failed to start:\n' + controlLog.slice(-3000));
+  control.kill('SIGTERM');
+  await fake.stopAll();
+  process.exit(1);
+}
+
+// ---------- Tests ----------
+let failed = 0;
+async function check(name, fn) {
+  try {
+    await fn();
+    console.log(`  PASS  ${name}`);
+  } catch (err) {
+    failed++;
+    console.log(`  FAIL  ${name}\n        ${err.message.split('\n').join('\n        ')}`);
+  }
+}
+
+const COMPANIES = [
+  { company: 'Acme Travel', admin: 'ana@acme.test' },
+  { company: 'Bluesky Tours', admin: 'ben@bluesky.test' },
+  { company: 'Cedar Trips', admin: 'cara@cedar.test' },
+  { company: 'Delta Journeys', admin: 'dan@delta.test' },
+  { company: 'Echo Voyages', admin: 'eve@echo.test' },
+];
+const slugs = {};   // company -> slug
+const pids = {};    // slug -> pid before update
+
+console.log('\n[1] Input validation');
+await check('rejects a malformed registration (bad email, short password)', async () => {
+  const r = await ctl('POST', '/api/register', { body: { companyName: 'X Co', adminName: 'Al', email: 'nope', password: 'short' } });
+  assert.equal(r.status, 400);
+});
+await check('rejects control characters in company name', async () => {
+  const r = await ctl('POST', '/api/register', { body: { companyName: 'Bad\nName', adminName: 'Al', email: 'a@b.test', password: PASSWORD } });
+  assert.equal(r.status, 400);
+});
+await check('rejects admin calls without the admin token', async () => {
+  const r = await ctl('GET', '/api/admin/tenants');
+  assert.equal(r.status, 401);
+});
+
+console.log('\n[2] Five-customer registration and automated provisioning');
+await check('registers five companies (202 Accepted, provisioning starts)', async () => {
+  for (const c of COMPANIES) {
+    const r = await ctl('POST', '/api/register', {
+      body: { companyName: c.company, adminName: 'Administrator', email: c.admin, password: PASSWORD },
+    });
+    assert.equal(r.status, 202, JSON.stringify(r.data));
+    slugs[c.company] = r.data.slug;
+  }
+});
+await check('all five workspaces reach "ready" through real provisioning steps', async () => {
+  for (const slug of Object.values(slugs)) {
+    const t = await waitReady(slug);
+    assert.ok(t.workspaceUrl?.startsWith('http://'), 'workspace URL present');
+    const steps = t.steps.map((s) => `${s.step}:${s.status}`);
+    for (const s of ['create_database', 'start_container', 'configure_routing', 'health_check']) {
+      assert.ok(steps.includes(`${s}:ok`), `${slug} step ${s} not ok: ${steps}`);
+    }
+  }
+});
+await check('registering the same company and email again is idempotent (200, same workspace)', async () => {
+  const c = COMPANIES[0];
+  const r = await ctl('POST', '/api/register', { body: { companyName: c.company, adminName: 'Administrator', email: c.admin, password: PASSWORD } });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.slug, slugs[c.company]);
+  const { rows } = await controlDb.query('SELECT count(*)::int AS n FROM tenants WHERE admin_email = $1', [c.admin]);
+  assert.equal(rows[0].n, 1);
+});
+await check('a different admin for a company with the same name gets its own workspace', async () => {
+  const r = await ctl('POST', '/api/register', { body: { companyName: 'Acme Travel', adminName: 'Other', email: 'other@acme.test', password: PASSWORD } });
+  assert.equal(r.status, 202);
+  assert.notEqual(r.data.slug, slugs['Acme Travel']);
+  assert.match(r.data.slug, /^acmetravel[0-9a-f]{4}$/);
+  await waitReady(r.data.slug);
+  slugs['Acme Travel (second)'] = r.data.slug;
+});
+
+console.log('\n[3] Isolation: separate databases, roles and containers');
+await check('each tenant has its own database and role in PostgreSQL', async () => {
+  const { rows } = await controlDb.query("SELECT slug, db_name, db_user FROM tenants WHERE status = 'ready' ORDER BY slug");
+  assert.equal(rows.length, 6);
+  const adminDb = new pg.Client({ connectionString: CONTROL_DB.replace('/voyage_control', '/postgres') });
+  await adminDb.connect();
+  for (const row of rows) {
+    const { rowCount } = await adminDb.query('SELECT 1 FROM pg_database WHERE datname = $1', [row.db_name]);
+    assert.equal(rowCount, 1, `database ${row.db_name} missing`);
+    const role = await adminDb.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [row.db_user]);
+    assert.equal(role.rowCount, 1, `role ${row.db_user} missing`);
+  }
+  await adminDb.end();
+});
+await check('each tenant has its own running container with its own DATABASE_URL', async () => {
+  const seen = new Set();
+  for (const slug of Object.values(slugs)) {
+    const r = await dockerApi('GET', `/containers/voyage-tenant-${slug}/json`);
+    assert.equal(r.status, 200);
+    assert.equal(r.data.State.Running, true);
+    const url = r.data.Config.Env.find((e) => e.startsWith('DATABASE_URL=')).split('@')[1];
+    assert.ok(url.endsWith(`/tenant_${slug}`), `container ${slug} points at ${url}`);
+    seen.add(r.data.State.Pid);
+  }
+  assert.equal(seen.size, 6, 'each container is a distinct process');
+});
+await check('each tenant has its own nginx route file, and the generated nginx config passes `nginx -t`', async () => {
+  for (const slug of Object.values(slugs)) {
+    const conf = fs.readFileSync(path.join(WORK, 'tenants', `${slug}.conf`), 'utf8');
+    assert.match(conf, new RegExp(`server_name ${slug}\\.localhost;`));
+    assert.match(conf, new RegExp(`voyage-tenant-${slug}:3000`));
+  }
+  execFileSync('nginx', ['-t', '-c', nginxMain], { stdio: 'pipe' });
+});
+await check('each tenant container answers health checks with its own DB and admin ready', async () => {
+  for (const slug of Object.values(slugs)) {
+    const r = await tenantApi(slug, 'GET', '/health');
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, true);
+    assert.equal(r.data.version, 'v1');
+    assert.equal(r.data.adminReady, true);
+  }
+});
+await check('a tenant database user cannot connect to another tenant database', async () => {
+  const acme = await controlDb.query('SELECT db_user FROM tenants WHERE slug = $1', [slugs['Acme Travel']]);
+  const bluesky = await controlDb.query('SELECT db_name FROM tenants WHERE slug = $1', [slugs['Bluesky Tours']]);
+  const acmePw = await tenantPasswordFromContainer(slugs['Acme Travel']);
+  const cross = new pg.Client({ connectionString: `postgres://${acme.rows[0].db_user}:${acmePw}@127.0.0.1:5432/${bluesky.rows[0].db_name}` });
+  let code = null;
+  try { await cross.connect(); } catch (err) { code = err.code; }
+  assert.equal(code, '42501', `expected permission denied (42501), got ${code}`);
+  const own = await controlDb.query('SELECT db_name FROM tenants WHERE slug = $1', [slugs['Acme Travel']]);
+  const ownClient = new pg.Client({ connectionString: `postgres://${acme.rows[0].db_user}:${acmePw}@127.0.0.1:5432/${own.rows[0].db_name}` });
+  await ownClient.connect();
+  await ownClient.end();
+});
+
+async function tenantPasswordFromContainer(slug) {
+  const r = await dockerApi('GET', `/containers/voyage-tenant-${slug}/json`);
+  const url = new URL(r.data.Config.Env.find((e) => e.startsWith('DATABASE_URL=')).slice('DATABASE_URL='.length));
+  return decodeURIComponent(url.password);
+}
+
+await check('admin password hashes are cleared from the control plane after provisioning', async () => {
+  const { rows } = await controlDb.query("SELECT count(*)::int AS n FROM tenants WHERE admin_password_hash IS NOT NULL AND status = 'ready'");
+  assert.equal(rows[0].n, 0);
+});
+
+console.log('\n[4] Tenant application: auth, CRUD, persistence');
+const tokens = {};
+await check('each tenant admin can sign in; wrong password is rejected', async () => {
+  for (const c of COMPANIES) {
+    const slug = slugs[c.company];
+    const bad = await tenantApi(slug, 'POST', '/auth/login', { body: { email: c.admin, password: 'wrong-password' } });
+    assert.equal(bad.status, 401);
+    const ok = await tenantApi(slug, 'POST', '/auth/login', { body: { email: c.admin, password: PASSWORD } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.data));
+    tokens[c.company] = ok.data.token;
+  }
+});
+await check('protected routes require a token', async () => {
+  const r = await tenantApi(slugs['Acme Travel'], 'GET', '/trips');
+  assert.equal(r.status, 401);
+});
+
+const acme = () => tokens['Acme Travel'];
+const acmeSlug = () => slugs['Acme Travel'];
+const ids = {};
+await check('destinations, trips, itinerary and expenses: create, read, update, delete', async () => {
+  const d = await tenantApi(acmeSlug(), 'POST', '/destinations', { token: acme(), body: { name: 'Lisbon', country: 'Portugal' } });
+  assert.equal(d.status, 201);
+  ids.dest = d.data.id;
+  const t = await tenantApi(acmeSlug(), 'POST', '/trips', { token: acme(), body: {
+    title: 'Lisbon spring', destination_id: ids.dest, start_date: '2099-04-01', end_date: '2099-04-07', budget: 2500, status: 'planned' } });
+  assert.equal(t.status, 201, JSON.stringify(t.data));
+  ids.trip = t.data.id;
+  const bad = await tenantApi(acmeSlug(), 'POST', '/trips', { token: acme(), body: { title: 'x', start_date: '2099-05-10', end_date: '2099-05-01' } });
+  assert.equal(bad.status, 400, 'end before start rejected');
+
+  const e1 = await tenantApi(acmeSlug(), 'POST', `/trips/${ids.trip}/events`, { token: acme(), body: {
+    title: 'Dinner at Time Out', location: 'Cais do Sodre', event_date: '2099-04-02', event_time: '20:30', category: 'meal', estimated_cost: 60 } });
+  const e0 = await tenantApi(acmeSlug(), 'POST', `/trips/${ids.trip}/events`, { token: acme(), body: {
+    title: 'Fly in', event_date: '2099-04-01', event_time: '08:00', category: 'transport', estimated_cost: 300 } });
+  assert.equal(e1.status, 201);
+  assert.equal(e0.status, 201);
+  const list = await tenantApi(acmeSlug(), 'GET', `/trips/${ids.trip}/events`, { token: acme() });
+  assert.deepEqual(list.data.map((e) => e.title), ['Fly in', 'Dinner at Time Out'], 'chronological order');
+  const upd = await tenantApi(acmeSlug(), 'PUT', `/events/${e0.data.id}`, { token: acme(), body: {
+    title: 'Fly in (delayed)', event_date: '2099-04-01', event_time: '10:00', category: 'transport', estimated_cost: 320 } });
+  assert.equal(upd.data.title, 'Fly in (delayed)');
+  await tenantApi(acmeSlug(), 'DELETE', `/events/${e1.data.id}`, { token: acme() });
+
+  const x = await tenantApi(acmeSlug(), 'POST', '/expenses', { token: acme(), body: {
+    description: 'Train tickets', amount: 45.5, category: 'transport', expense_date: '2099-04-02', trip_id: ids.trip } });
+  assert.equal(x.status, 201);
+  ids.expense = x.data.id;
+  const stats = await tenantApi(acmeSlug(), 'GET', '/dashboard/stats', { token: acme() });
+  assert.equal(stats.data.total_trips, 1);
+  assert.equal(stats.data.upcoming_trips, 1);
+  assert.equal(stats.data.total_expenses, 45.5);
+  const trip = await tenantApi(acmeSlug(), 'PUT', `/trips/${ids.trip}`, { token: acme(), body: {
+    title: 'Lisbon spring', destination_id: ids.dest, start_date: '2099-04-01', end_date: '2099-04-07', budget: 2600, status: 'ongoing' } });
+  assert.equal(trip.data.budget, 2600);
+});
+await check('settings: company name and admin profile update', async () => {
+  const c = await tenantApi(acmeSlug(), 'PUT', '/settings/company', { token: acme(), body: { name: 'Acme Travel Ltd' } });
+  assert.equal(c.data.company.name, 'Acme Travel Ltd');
+  const s = await tenantApi(acmeSlug(), 'GET', '/settings', { token: acme() });
+  assert.equal(s.data.company.name, 'Acme Travel Ltd');
+  assert.equal(s.data.version, 'v1');
+});
+await check('data persists after a container restart (stop + start, same database)', async () => {
+  await dockerApi('POST', `/containers/voyage-tenant-${acmeSlug()}/stop`);
+  await dockerApi('POST', `/containers/voyage-tenant-${acmeSlug()}/start`);
+  await waitFor(async () => (await tenantApi(acmeSlug(), 'GET', '/health')).status === 200, 'acme restarted');
+  const list = await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() });
+  assert.equal(list.status, 200);
+  assert.equal(list.data.length, 1);
+  assert.equal(list.data[0].title, 'Lisbon spring');
+});
+
+console.log('\n[5] Five tenants: data isolation');
+await check('each tenant creates a trip; each sees only its own data', async () => {
+  for (const c of COMPANIES) {
+    const slug = slugs[c.company];
+    const r = await tenantApi(slug, 'POST', '/trips', { token: tokens[c.company], body: {
+      title: `Trip for ${slug}`, start_date: '2099-06-01', end_date: '2099-06-05' } });
+    assert.equal(r.status, 201);
+  }
+  for (const c of COMPANIES) {
+    const slug = slugs[c.company];
+    const list = await tenantApi(slug, 'GET', '/trips', { token: tokens[c.company] });
+    const titles = list.data.map((t) => t.title);
+    assert.ok(titles.includes(`Trip for ${slug}`), `${slug} sees its own trip`);
+    for (const other of Object.values(slugs)) {
+      if (other !== slug) assert.ok(!titles.includes(`Trip for ${other}`), `${slug} must not see ${other}'s trip`);
+    }
+  }
+});
+await check('a token issued by one tenant is rejected by every other tenant', async () => {
+  for (const other of COMPANIES.slice(1)) {
+    const r = await tenantApi(slugs[other.company], 'GET', '/trips', { token: acme() });
+    assert.equal(r.status, 401, `Acme token accepted by ${other.company}`);
+  }
+});
+
+console.log('\n[6] Independent version deployment');
+for (const slug of Object.values(slugs)) {
+  const r = await dockerApi('GET', `/containers/voyage-tenant-${slug}/json`);
+  pids[slug] = r.data.State.Pid;
+}
+const acmeTripsBefore = (await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length;
+
+await check('deploying an unknown image is refused (422) and an invalid version is refused (400)', async () => {
+  const unknown = await ctl('POST', `/api/admin/tenants/${acmeSlug()}/deploy`, { ...adminOpts, body: { version: 'v9' } });
+  assert.equal(unknown.status, 422);
+  const invalid = await ctl('POST', `/api/admin/tenants/${acmeSlug()}/deploy`, { ...adminOpts, body: { version: 'latest; rm -rf /' } });
+  assert.equal(invalid.status, 400);
+});
+await check('the admin page lists available versions', async () => {
+  const r = await ctl('GET', '/api/admin/versions', adminOpts);
+  assert.deepEqual(r.data.versions, ['v1', 'v2']);
+});
+await check('Client A (Acme) is upgraded to v2: container replaced, database preserved', async () => {
+  const r = await ctl('POST', `/api/admin/tenants/${acmeSlug()}/deploy`, { ...adminOpts, body: { version: 'v2' } });
+  assert.equal(r.status, 202, JSON.stringify(r.data));
+  await waitAdminReady(acmeSlug(), 'v2');
+  const h = await tenantApi(acmeSlug(), 'GET', '/health');
+  assert.equal(h.data.version, 'v2');
+  const trips = await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() });
+  assert.equal(trips.status, 200);
+  assert.equal(trips.data.length, acmeTripsBefore, 'trips preserved across the container replacement');
+  const newPid = (await dockerApi('GET', `/containers/voyage-tenant-${acmeSlug()}/json`)).data.State.Pid;
+  assert.notEqual(newPid, pids[acmeSlug()], 'Acme container was recreated');
+});
+await check('Clients B, C, D and E remain on v1 and their containers were not touched', async () => {
+  for (const c of COMPANIES.slice(1)) {
+    const slug = slugs[c.company];
+    const row = await adminRow(slug);
+    assert.equal(row.version, 'v1', `${slug} version changed`);
+    const h = await tenantApi(slug, 'GET', '/health');
+    assert.equal(h.data.version, 'v1', `${slug} runtime version changed`);
+    const pid = (await dockerApi('GET', `/containers/voyage-tenant-${slug}/json`)).data.State.Pid;
+    assert.equal(pid, pids[slug], `${slug} container was restarted`);
+  }
+});
+await check('the admin view reports Client A = v2 and the others = v1', async () => {
+  const rows = (await ctl('GET', '/api/admin/tenants', adminOpts)).data;
+  const bySlug = Object.fromEntries(rows.map((r) => [r.slug, r.version]));
+  assert.equal(bySlug[acmeSlug()], 'v2');
+  for (const c of COMPANIES.slice(1)) assert.equal(bySlug[slugs[c.company]], 'v1', c.company);
+  assert.equal(bySlug[slugs['Acme Travel (second)']], 'v1', 'second Acme workspace untouched');
+});
+await check('Acme sign-in still works on v2 and existing data is intact', async () => {
+  const r = await tenantApi(acmeSlug(), 'POST', '/auth/login', { body: { email: 'ana@acme.test', password: PASSWORD } });
+  assert.equal(r.status, 200);
+  const exp = await tenantApi(acmeSlug(), 'GET', '/expenses', { token: r.data.token });
+  assert.equal(exp.data.length, 1);
+});
+await check('rollback restores Client A to v1 with its data still in place', async () => {
+  const r = await ctl('POST', `/api/admin/tenants/${acmeSlug()}/rollback`, adminOpts);
+  assert.equal(r.status, 202);
+  await waitAdminReady(acmeSlug(), 'v1');
+  const trips = await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() });
+  assert.equal(trips.data.length, acmeTripsBefore);
+});
+await check('after rollback the other four tenants are still untouched', async () => {
+  for (const c of COMPANIES.slice(1)) {
+    const slug = slugs[c.company];
+    const pid = (await dockerApi('GET', `/containers/voyage-tenant-${slug}/json`)).data.State.Pid;
+    assert.equal(pid, pids[slug], `${slug} restarted during rollback`);
+  }
+});
+
+console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);
+if (failed) console.log('\n--- control plane log (tail) ---\n' + controlLog.slice(-2500));
+
+control.kill('SIGTERM');
+await fake.stopAll();
+await controlDb.end();
+process.exit(failed ? 1 : 0);

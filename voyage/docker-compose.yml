@@ -1,0 +1,60 @@
+name: voyage
+
+# Central platform only: Postgres (control DB + tenant DBs), the control plane and the edge proxy.
+# Tenant containers are created at runtime by the control plane through the Docker socket.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: voyage-postgres
+    environment:
+      POSTGRES_USER: voyage_admin
+      POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD:?set PG_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      PROVISIONER_PASSWORD: ${PROVISIONER_PASSWORD:?set PROVISIONER_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks: [voyage-net]    # not published to the host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voyage_admin"]
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+
+  control-plane:
+    build: ./control-plane
+    container_name: voyage-control
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Only this service can reach Docker. Tenant containers never mount the socket.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - tenant-nginx-conf:/etc/nginx/tenants
+    group_add:
+      - "${DOCKER_GID:-999}"
+    networks: [voyage-net]
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: voyage-nginx
+    depends_on: [control-plane]
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - tenant-nginx-conf:/etc/nginx/tenants:ro
+    networks: [voyage-net]
+    restart: unless-stopped
+
+networks:
+  voyage-net:
+    name: voyage-net
+
+volumes:
+  pgdata:
+    name: voyage-pgdata
+  tenant-nginx-conf:
+    name: voyage-tenant-nginx

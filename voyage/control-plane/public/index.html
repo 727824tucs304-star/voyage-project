@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voyage · Workspace Platform</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+  header { background: #0f1f3d; color: #fff; padding: 14px 24px; font-weight: 600; display: flex; justify-content: space-between; }
+  header a { color: #93c5fd; font-weight: 400; font-size: 14px; text-decoration: none; }
+  main { max-width: 1040px; margin: 24px auto; padding: 0 16px; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.05); margin-bottom: 16px; }
+  label { display: block; font-size: 14px; margin-bottom: 12px; }
+  input, select { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; margin-top: 4px; }
+  button { background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; margin: 2px 0; }
+  button.ghost { background: #fff; color: #334155; border: 1px solid #cbd5e1; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  th { color: #64748b; font-weight: 500; font-size: 12px; text-transform: uppercase; }
+  .err { color: #dc2626; } .ok { color: #059669; } .muted { color: #64748b; font-size: 14px; }
+  .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #e2e8f0; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .bar select { width: auto; }
+</style>
+</head>
+<body>
+<header><span>Voyage · Workspace Platform</span><a href="#/admin">Admin</a></header>
+<main id="app"></main>
+<script>
+const app = document.getElementById('app');
+let timer = null;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const TOKEN_KEY = 'voyageAdminToken';
+
+async function api(method, url, body, token) {
+  const headers = {};
+  if (body != null) headers['Content-Type'] = 'application/json';
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const r = await fetch(url, { method, headers, body: body != null ? JSON.stringify(body) : undefined });
+  const data = r.status === 204 ? {} : await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+  return data;
+}
+
+function register() {
+  app.innerHTML = `
+    <div class="card" style="max-width:520px">
+      <h2 style="margin-top:0">Create your workspace</h2>
+      <p class="muted">We provision a dedicated database, container and subdomain for your company. This usually takes about a minute.</p>
+      <form id="reg">
+        <label>Company name<input name="companyName" required minlength="2" maxlength="80"></label>
+        <label>Administrator name<input name="adminName" required minlength="2" maxlength="80"></label>
+        <label>Email<input name="email" type="email" required maxlength="120"></label>
+        <label>Password (min 8 characters)<input name="password" type="password" required minlength="8" maxlength="128"></label>
+        <p id="msg" class="err"></p>
+        <button id="go">Create workspace</button>
+      </form>
+    </div>`;
+  document.getElementById('reg').onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('go');
+    const msg = document.getElementById('msg');
+    btn.disabled = true; msg.textContent = '';
+    try {
+      const r = await api('POST', '/api/register', Object.fromEntries(new FormData(e.target)));
+      location.hash = `#/status/${r.slug}`;
+    } catch (err) {
+      msg.textContent = err.message; btn.disabled = false;
+    }
+  };
+}
+
+async function status(slug) {
+  const draw = async () => {
+    let t;
+    try {
+      t = await api('GET', `/api/tenants/${encodeURIComponent(slug)}`);
+    } catch (err) {
+      app.innerHTML = `<div class="card err">${esc(err.message)}</div>`;
+      return;
+    }
+    const steps = Object.values((t.steps || []).reduce((acc, s) => ((acc[s.step] = s), acc), {}));
+    const ready = t.status === 'ready';
+    const heading = ready ? 'Workspace Ready' : t.status === 'failed' ? 'Provisioning failed' : `Provisioning ${esc(t.companyName)}…`;
+    app.innerHTML = `
+      <div class="card">
+        <h2 style="margin-top:0">${heading}</h2>
+        ${ready
+          ? `<p>Your workspace is live:</p>
+             <p style="font-size:18px"><a href="${esc(t.workspaceUrl)}" target="_blank" rel="noopener"><strong>${esc(t.workspaceUrl)}</strong></a></p>
+             <p class="muted">Sign in with the administrator email and password you registered with.</p>`
+          : `<p class="muted">Status: ${esc(t.status)}${t.currentStep ? ' · ' + esc(t.currentStep) : ''}</p>`}
+        ${t.status === 'failed' ? `<p class="err">${esc(t.errorMessage)}</p><button id="retry">Retry provisioning</button>` : ''}
+        <table style="margin-top:12px">
+          <tr><th>Step</th><th>Result</th><th>Detail</th></tr>
+          ${steps.map((s) => `<tr><td>${esc(s.step)}</td><td class="${s.status === 'ok' ? 'ok' : s.status === 'failed' ? 'err' : 'muted'}">${esc(s.status)}</td><td class="muted">${esc(s.detail)}</td></tr>`).join('')}
+        </table>
+      </div>`;
+    const retry = document.getElementById('retry');
+    if (retry) retry.onclick = async () => { retry.disabled = true; try { await api('POST', `/api/tenants/${encodeURIComponent(slug)}/retry`); } catch (e) { alert(e.message); } timer = setTimeout(draw, 500); };
+    if (ready || t.status === 'failed') return;
+    timer = setTimeout(draw, 2000);
+  };
+  await draw();
+}
+
+async function admin() {
+  const token = sessionStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    app.innerHTML = `<div class="card" style="max-width:420px"><h2 style="margin-top:0">Admin sign-in</h2>
+      <form id="af"><label>Admin token<input type="password" name="t" required></label><button>Continue</button></form></div>`;
+    document.getElementById('af').onsubmit = (e) => {
+      e.preventDefault();
+      sessionStorage.setItem(TOKEN_KEY, e.target.t.value);
+      admin();
+    };
+    return;
+  }
+  let tenants, versions;
+  try {
+    [tenants, versions] = await Promise.all([
+      api('GET', '/api/admin/tenants', null, token),
+      api('GET', '/api/admin/versions', null, token).then((r) => r.versions),
+    ]);
+  } catch (err) {
+    sessionStorage.removeItem(TOKEN_KEY);
+    app.innerHTML = `<div class="card err">${esc(err.message)}</div><a href="#/admin">Try again</a>`;
+    return;
+  }
+  const rows = tenants.map((t) => {
+    const choices = versions.filter((v) => v !== t.version);
+    return `<tr>
+      <td><strong>${esc(t.companyName)}</strong><div class="muted">${esc(t.adminEmail)}</div></td>
+      <td><a href="http://${esc(t.domain)}" target="_blank" rel="noopener">${esc(t.domain)}</a></td>
+      <td>${esc(t.databaseName)}</td>
+      <td>${esc(t.containerName)}</td>
+      <td><span class="badge">${esc(t.version)}</span>${t.previousVersion ? `<div class="muted">previous ${esc(t.previousVersion)}</div>` : ''}</td>
+      <td>${esc(t.status)}${t.currentStep ? `<div class="muted">${esc(t.currentStep)}</div>` : ''}${t.errorMessage ? `<div class="err" style="font-size:12px">${esc(t.errorMessage)}</div>` : ''}</td>
+      <td>
+        ${t.status === 'ready' ? `<div class="bar">
+          <select data-select="${esc(t.slug)}" ${choices.length ? '' : 'disabled'}>${choices.map((v) => `<option>${esc(v)}</option>`).join('') || '<option>no other versions</option>'}</select>
+          <button data-action="deploy" data-slug="${esc(t.slug)}" ${choices.length ? '' : 'disabled'}>Deploy</button>
+          ${t.previousVersion ? `<button class="ghost" data-action="rollback" data-slug="${esc(t.slug)}">Rollback</button>` : ''}
+        </div>` : ''}
+        ${t.status === 'failed' ? `<button class="ghost" data-action="retry" data-slug="${esc(t.slug)}">Retry</button>` : ''}
+      </td></tr>`;
+  });
+  app.innerHTML = `
+    <div class="card">
+      <div class="bar" style="justify-content:space-between;margin-bottom:8px">
+        <h2 style="margin:0">Tenants (${tenants.length})</h2>
+        <span class="muted">Available images: ${versions.map(esc).join(', ') || 'none'}</span>
+      </div>
+      <p id="amsg" class="muted" style="margin:6px 0"></p>
+      <div style="overflow-x:auto"><table>
+        <tr><th>Company</th><th>Domain</th><th>Database</th><th>Container</th><th>Version</th><th>Status</th><th>Actions</th></tr>
+        ${rows.join('') || '<tr><td colspan="7" class="muted">No tenants yet.</td></tr>'}
+      </table></div>
+    </div>`;
+  if (tenants.some((t) => t.status === 'provisioning' || t.status === 'updating')) timer = setTimeout(admin, 3000);
+}
+
+app.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const slug = btn.dataset.slug;
+  const token = sessionStorage.getItem(TOKEN_KEY);
+  const msg = document.getElementById('amsg');
+  try {
+    if (btn.dataset.action === 'deploy') {
+      const version = document.querySelector(`select[data-select="${slug}"]`).value;
+      await api('POST', `/api/admin/tenants/${encodeURIComponent(slug)}/deploy`, { version }, token);
+      msg.textContent = `Deploying ${version} to ${slug}. Other tenants are not touched.`;
+    } else if (btn.dataset.action === 'rollback') {
+      await api('POST', `/api/admin/tenants/${encodeURIComponent(slug)}/rollback`, null, token);
+      msg.textContent = `Rolling ${slug} back to its previous version.`;
+    } else if (btn.dataset.action === 'retry') {
+      await api('POST', `/api/tenants/${encodeURIComponent(slug)}/retry`);
+      msg.textContent = `Retrying provisioning for ${slug}.`;
+    }
+  } catch (err) {
+    msg.textContent = err.message;
+    msg.className = 'err';
+  }
+  clearTimeout(timer);
+  timer = setTimeout(admin, 800);
+});
+
+function route() {
+  clearTimeout(timer);
+  const h = location.hash || '#/';
+  if (h.startsWith('#/status/')) return status(decodeURIComponent(h.slice(9)));
+  if (h === '#/admin') return admin();
+  return register();
+}
+window.addEventListener('hashchange', route);
+route();
+</script>
+</body>
+</html>
