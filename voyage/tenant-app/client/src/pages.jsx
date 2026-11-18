@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2, Save } from 'lucide-react';
 import { api, session } from './api.js';
+import { useTheme, BUTTON_STYLES } from './theme.js';
 
 const TRIP_STATUSES = ['planned', 'ongoing', 'completed', 'cancelled'];
 const EVENT_CATEGORIES = ['transport', 'accommodation', 'activity', 'meal', 'other'];
@@ -21,8 +22,9 @@ export function Card({ children, className = '' }) {
 }
 
 export function Button({ variant = 'primary', className = '', ...props }) {
+  const { theme } = useTheme();
   const styles = {
-        primary: 'bg-green-600 text-white hover:bg-green-700',
+    primary: BUTTON_STYLES[theme.button_color] || BUTTON_STYLES.blue,
     ghost: 'border border-slate-200 text-slate-700 hover:bg-slate-50',
     danger: 'text-red-600 hover:bg-red-50',
   };
@@ -226,7 +228,7 @@ function ResourcePage({ title, listUrl, createUrl, itemPath, fields, columns, em
         {createUrl && (
           <Button onClick={() => setEditing({})}>
             <Plus className="h-4 w-4" />
-            Add 
+            Add
           </Button>
         )}
       </PageHeader>
@@ -338,6 +340,7 @@ export function LoginPage({ onLogin }) {
 export function DashboardPage() {
   const { data: stats, error } = useApi('/dashboard/stats');
   const { data: upcoming } = useApi('/dashboard/upcoming');
+  const { data: release, error: releaseErr } = useApi('/whats-new');
   const cards = stats
     ? [
         ['Total trips', stats.total_trips],
@@ -359,6 +362,23 @@ export function DashboardPage() {
           </Card>
         ))}
       </div>
+      {!releaseErr && (
+        <Card className="mt-6 p-5">
+          <div className="font-medium text-slate-900">What's new</div>
+          {!release ? (
+            <p className="mt-1 text-sm text-slate-500">Loading…</p>
+          ) : release.message ? (
+            <p className="mt-1 text-sm text-slate-700">
+              {release.message}
+              <span className="ml-2 text-xs text-slate-500">
+                {release.releasedAt ? new Date(release.releasedAt).toLocaleDateString() : ''} · version {release.version}
+              </span>
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-slate-500">Version {release.version}. No release notes.</p>
+          )}
+        </Card>
+      )}
       <Card className="mt-6">
         <div className="border-b border-slate-200 px-5 py-3 font-medium text-slate-900">Upcoming trips</div>
         {!upcoming ? (

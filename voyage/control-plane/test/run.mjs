@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import pg from 'pg';
 import { startFakeDocker } from './fake-docker.mjs';
+import { startFakeGithub } from './fake-github.mjs';
 
 const REPO = path.resolve(import.meta.dirname, '..', '..');
 const TENANT_ENTRY = path.join(REPO, 'tenant-app', 'server', 'index.js');
@@ -19,6 +20,13 @@ const CONTROL_PORT = 4100;
 const CONTROL = `http://127.0.0.1:${CONTROL_PORT}`;
 const ADMIN_TOKEN = crypto.randomBytes(24).toString('hex');
 const PROV_PW = `prov${crypto.randomBytes(8).toString('hex')}`;
+const REMOTE = path.join(WORK, 'remote.git');
+const WS = path.join(WORK, 'workspace');
+const IMAGE_FILE = path.join(WORK, 'extra-images.txt');
+const BUILD_CMD = path.join(WORK, 'fake-build.sh');
+const BUILD_LOG = path.join(WORK, 'build-log.txt');
+const GH_PORT = 4200;
+const GITHUB_TOKEN = `ghp_test_${crypto.randomBytes(12).toString('hex')}`;
 const PASSWORD = 'SecurePass123';
 
 // Clear leftovers from any previous crashed run (stale control plane / tenant processes / hosts entries).
@@ -29,6 +37,14 @@ execFileSync('bash', ['-c', 'pkill -KILL -f "[t]enant-app/server/index.js"; pkil
 }
 fs.rmSync(WORK, { recursive: true, force: true });
 fs.mkdirSync(path.join(WORK, 'tenants'), { recursive: true });
+// Source workspace: a real git repository with a bare "GitHub" remote, laid out like the server clone (project in voyage/).
+fs.mkdirSync(path.join(WS, 'voyage'), { recursive: true });
+execFileSync('bash', ['-c', `cd "${REPO}" && tar --exclude=node_modules --exclude=dist -cf - tenant-app control-plane/src README.md | tar -xf - -C "${WS}/voyage"`]);
+execFileSync('git', ['init', '-q', '--bare', '-b', 'main', REMOTE]);
+execFileSync('bash', ['-c', `cd "${WS}" && git init -q -b main && git remote add origin "${REMOTE}" && git add -A && git -c user.name=t -c user.email=t@t commit -qm "initial" && git push -q -u origin main`]);
+// "docker build" stand-in: records the new tag the way a successful build would make it visible.
+fs.writeFileSync(BUILD_CMD, `#!/bin/sh\nfor a in "$@"; do ctx="$a"; done\ntag=""\nwhile [ $# -gt 0 ]; do case "$1" in -t) tag="$2"; shift ;; esac; shift; done\nhash=$(sha256sum "$ctx/client/src/pages.jsx" | cut -d' ' -f1)\necho "$tag $hash" >> "${BUILD_LOG}"\necho "$tag" >> "${IMAGE_FILE}"\necho "Successfully tagged $tag"\n`, { mode: 0o755 });
+const CONFIG_PATH = path.join(WS, 'voyage', 'control-plane', 'src', 'config.js');
 fs.mkdirSync(path.join(WORK, 'logs'), { recursive: true });
 
 // nginx main config for this host: the real config with the tenant include pointed at WORK.
@@ -53,7 +69,8 @@ const controlDb = new pg.Client({ connectionString: CONTROL_DB });
 await controlDb.connect();
 
 // ---------- Start the fake Docker engine and the real control plane ----------
-const fake = startFakeDocker({ socketPath: SOCK, tenantEntry: TENANT_ENTRY, nginxMain, logDir: path.join(WORK, 'logs') });
+const fake = startFakeDocker({ socketPath: SOCK, tenantEntry: TENANT_ENTRY, nginxMain, logDir: path.join(WORK, 'logs'), imageFile: IMAGE_FILE });
+const gh = startFakeGithub({ port: GH_PORT, remote: REMOTE, branch: 'main' });
 const control = spawn(process.execPath, ['src/index.js'], {
   cwd: CONTROL_DIR,
   env: {
@@ -73,6 +90,13 @@ const control = spawn(process.execPath, ['src/index.js'], {
     NGINX_CONTAINER: 'voyage-nginx',
     NGINX_TENANT_DIR: path.join(WORK, 'tenants'),
     HEALTH_TIMEOUT_MS: '60000',
+    DOCKER_BIN: BUILD_CMD,
+    REPO_ROOT: WS,
+    PROJECT_SUBDIR: 'voyage',
+    GITHUB_REPO: 'test-org/voyage',
+    GITHUB_BRANCH: 'main',
+    GITHUB_TOKEN,
+    GITHUB_API_URL: `http://127.0.0.1:${GH_PORT}`,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -463,10 +487,150 @@ await check('after rollback the other four tenants are still untouched', async (
   }
 });
 
+console.log('\n[7] GitHub-connected Deployment Manager');
+const DEV = path.join(WORK, 'developer');
+const PAGES_REL = 'voyage/tenant-app/client/src/pages.jsx';
+const PAGES_MSG = 'Add metrics module, tidy pages, drop old README';
+const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+const gitOut = (...args) => execFileSync('git', ['-C', REMOTE, ...args], { encoding: 'utf8' }).trim();
+const buildEntries = () => (fs.existsSync(BUILD_LOG) ? fs.readFileSync(BUILD_LOG, 'utf8').trim().split('\n').map((l) => l.split(' ')) : []);
+const otherSlugs = () => COMPANIES.slice(1).map((c) => slugs[c.company]);
+const snapshot = async (list) => {
+  const out = {};
+  for (const s of list) {
+    out[s] = { pid: (await dockerApi('GET', `/containers/voyage-tenant-${s}/json`)).data.State.Pid, version: (await adminRow(s)).version };
+  }
+  return out;
+};
+const lastDeploymentId = async () => Number((await controlDb.query('SELECT COALESCE(MAX(id), 0) AS m FROM deployments')).rows[0].m);
+const waitDeployment = (slug, afterId) => waitFor(async () => {
+  const d = (await ctl('GET', `/api/admin/releases/status?slug=${slug}`, adminOpts)).data.latestDeployment;
+  if (!d || Number(d.id) <= afterId || d.status === 'running') return null;
+  return d;
+}, `deployment of ${slug}`, 240000);
+const sameOthers = async (before) => {
+  for (const s of otherSlugs()) {
+    const now = await snapshot([s]);
+    assert.equal(now[s].pid, before[s].pid, `${s} container was restarted`);
+    assert.equal(now[s].version, before[s].version, `${s} version changed`);
+  }
+};
+let commit1 = null, commit2 = null, v3 = null, v4 = null;
+
+await check('VS Code change: a developer commits and pushes to GitHub', async () => {
+  execFileSync('bash', ['-c', `git clone -q "${REMOTE}" "${DEV}" && cd "${DEV}" && git config user.name "Dev Person" && git config user.email dev@example.test`]);
+  fs.appendFileSync(path.join(DEV, PAGES_REL), '\n// dev-change-1\n');
+  fs.writeFileSync(path.join(DEV, 'voyage/tenant-app/server/metrics.js'), 'export const metrics = true;\n');
+  execFileSync('git', ['-C', DEV, 'rm', '-q', 'voyage/README.md']);
+  execFileSync('bash', ['-c', `cd "${DEV}" && git add -A && git commit -qm "${PAGES_MSG}" && git push -q origin main`]);
+  commit1 = gitOut('rev-parse', 'main');
+});
+await check('GitHub connection returns the latest commits with message and author; token never returned', async () => {
+  const r = await ctl('GET', '/api/admin/github/commits', adminOpts);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data[0].sha, commit1);
+  assert.equal(r.data[0].message, PAGES_MSG);
+  assert.equal(r.data[0].author, 'Dev Person');
+  assert.ok(!JSON.stringify(r.data).includes(GITHUB_TOKEN), 'token must not leave the server');
+  assert.ok(gh.seenAuth.includes(`Bearer ${GITHUB_TOKEN}`), 'GitHub requests are authenticated on the server');
+});
+await check('change detection: added, modified and deleted files are identified', async () => {
+  const r = await ctl('GET', `/api/admin/github/changes?slug=${acmeSlug()}`, adminOpts);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.latest.sha, commit1);
+  assert.equal(r.data.baseline, null, 'no GitHub-tracked deployment for Client A yet');
+  const st = Object.fromEntries(r.data.latestFiles.map((f) => [f.path, f.status]));
+  assert.equal(st[PAGES_REL], 'modified');
+  assert.equal(st['voyage/tenant-app/server/metrics.js'], 'added');
+  assert.equal(st['voyage/README.md'], 'deleted');
+});
+await check('DEPLOY CHANGES builds the commit and deploys it to Client A only', async () => {
+  const others = await snapshot(otherSlugs());
+  const after = await lastDeploymentId();
+  const r = await ctl('POST', '/api/admin/releases', { ...adminOpts, body: { slug: acmeSlug(), sha: commit1 } });
+  assert.equal(r.status, 202, JSON.stringify(r.data));
+  const dep = await waitDeployment(acmeSlug(), after);
+  assert.equal(dep.status, 'succeeded', dep.detail);
+  v3 = dep.to_version;
+  assert.equal(dep.commit_hash, commit1);
+  const built = buildEntries().find(([tag]) => tag.endsWith(`:${v3}`));
+  assert.equal(built[1], sha256(execFileSync('git', ['-C', REMOTE, 'show', `${commit1}:${PAGES_REL}`])), 'the image was built from exactly this commit');
+  assert.equal((await tenantApi(acmeSlug(), 'GET', '/health')).data.version, v3);
+  const env = (await dockerApi('GET', `/containers/voyage-tenant-${acmeSlug()}/json`)).data.Config.Env;
+  assert.ok(env.includes(`RELEASE_MESSAGE=${PAGES_MSG}`), 'release note reached the container');
+  await sameOthers(others);
+});
+await check("Client A's workspace shows What's New with the deployed commit message and date", async () => {
+  const r = await tenantApi(acmeSlug(), 'GET', '/whats-new', { token: acme() });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.version, v3);
+  assert.equal(r.data.message, PAGES_MSG);
+  assert.ok(r.data.releasedAt, 'release date present');
+  assert.ok(!JSON.stringify(r.data).includes(GITHUB_TOKEN), 'no credentials exposed to customers');
+});
+await check('deployment history records commit hash, message, versions and status', async () => {
+  const r = await ctl('GET', `/api/admin/releases/history?slug=${acmeSlug()}`, adminOpts);
+  const row = r.data[0];
+  assert.equal(row.to_version, v3);
+  assert.equal(row.commit_hash, commit1);
+  assert.equal(row.commit_message, PAGES_MSG);
+  assert.equal(row.status, 'succeeded');
+  assert.ok(row.created_at);
+});
+await check('after a second push, only the changes not yet deployed are listed', async () => {
+  fs.appendFileSync(path.join(DEV, PAGES_REL), '\n// dev-change-2\n');
+  execFileSync('bash', ['-c', `cd "${DEV}" && git commit -qam "Second pages tweak" && git push -q origin main`]);
+  commit2 = gitOut('rev-parse', 'main');
+  const r = await ctl('GET', `/api/admin/github/changes?slug=${acmeSlug()}`, adminOpts);
+  assert.equal(r.data.latest.sha, commit2);
+  assert.equal(r.data.baseline, commit1);
+  assert.equal(r.data.upToDate, false);
+  assert.deepEqual(r.data.files, [{ path: PAGES_REL, status: 'modified' }]);
+});
+await check('deploying the new commit leaves Client A up to date; other clients untouched', async () => {
+  const others = await snapshot(otherSlugs());
+  const after = await lastDeploymentId();
+  const r = await ctl('POST', '/api/admin/releases', { ...adminOpts, body: { slug: acmeSlug(), sha: commit2 } });
+  assert.equal(r.status, 202, JSON.stringify(r.data));
+  const dep = await waitDeployment(acmeSlug(), after);
+  assert.equal(dep.status, 'succeeded', dep.detail);
+  v4 = dep.to_version;
+  assert.notEqual(v4, v3);
+  const c = await ctl('GET', `/api/admin/github/changes?slug=${acmeSlug()}`, adminOpts);
+  assert.equal(c.data.upToDate, true);
+  assert.deepEqual(c.data.files, []);
+  await sameOthers(others);
+});
+await check('rolling back Client A to an earlier version is recorded and keeps its trips', async () => {
+  const trips = (await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length;
+  const after = await lastDeploymentId();
+  const r = await ctl('POST', '/api/admin/releases/rollback', { ...adminOpts, body: { slug: acmeSlug(), version: v3 } });
+  assert.equal(r.status, 202, JSON.stringify(r.data));
+  const dep = await waitDeployment(acmeSlug(), after);
+  assert.equal(dep.kind, 'rollback');
+  assert.equal(dep.status, 'succeeded', dep.detail);
+  assert.equal((await tenantApi(acmeSlug(), 'GET', '/health')).data.version, v3);
+  assert.equal((await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length, trips);
+});
+await check('invalid requests are refused before anything is built or deployed', async () => {
+  const cases = [
+    ['/api/admin/releases', { slug: acmeSlug(), sha: 'main' }, 400],
+    ['/api/admin/releases', { slug: acmeSlug(), sha: '0'.repeat(40) }, 422],
+    ['/api/admin/releases', { slug: 'nosuchclient', sha: commit2 }, 404],
+    ['/api/admin/releases/rollback', { slug: acmeSlug(), version: 'v9' }, 422],
+    ['/api/admin/releases/rollback', { slug: acmeSlug(), version: 'latest; rm' }, 400],
+  ];
+  for (const [p, body, code] of cases) {
+    const r = await ctl('POST', p, { ...adminOpts, body });
+    assert.equal(r.status, code, `${p} ${JSON.stringify(body)} returned ${r.status}`);
+  }
+});
+
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);
 if (failed) console.log('\n--- control plane log (tail) ---\n' + controlLog.slice(-2500));
 
 control.kill('SIGTERM');
 await fake.stopAll();
+gh.close();
 await controlDb.end();
 process.exit(failed ? 1 : 0);

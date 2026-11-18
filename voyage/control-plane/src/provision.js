@@ -6,6 +6,7 @@ import * as docker from './docker.js';
 import { applyTenantConf, tenantConf } from './nginx.js';
 import { HttpError } from './errors.js';
 import { tenantSecrets, baseSlug, randomSuffix, SLUG_RE, VERSION_RE } from './security.js';
+import { releaseInfo } from './builds.js';
 
 const busy = new Set();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -108,6 +109,9 @@ async function ensureContainer(t, version, { force = false } = {}) {
   if (t.admin_password_hash) {
     env.push(`ADMIN_NAME=${t.admin_name}`, `ADMIN_EMAIL=${t.admin_email}`, `ADMIN_PASSWORD_HASH=${t.admin_password_hash}`);
   }
+
+  const rel = await releaseInfo(version);
+  env.push(`RELEASE_VERSION=${version}`, `RELEASE_COMMIT=${rel.commit}`, `RELEASE_MESSAGE=${rel.message}`, `RELEASE_DATE=${rel.date}`);
 
   // The container is disposable: all state lives in the tenant's database.
   await docker.removeContainer(n.container);
@@ -305,9 +309,7 @@ export function publicView(t) {
     status: t.status,
     currentStep: t.current_step,
     errorMessage: t.status === 'failed' ? t.error_message : null,
-        workspaceUrl: t.status === 'ready'
-      ? `${config.workspaceScheme}://${t.domain}${config.workspacePort ? `:${config.workspacePort}` : ''}`
-      : null,
+    workspaceUrl: t.status === 'ready' ? `${config.workspaceScheme}://${t.domain}` : null,
     steps: [...latest.values()],
   };
 }

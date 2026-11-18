@@ -6,11 +6,14 @@ import { db, initControlDb } from './db.js';
 import * as P from './provision.js';
 import { HttpError } from './errors.js';
 import { EMAIL_RE, SLUG_RE, safeEqual } from './security.js';
+import { releaseRouter } from './admin-release.js';
+import { deployRecorded } from './deploy-history.js';
+import { resumeBuilds } from './builds.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '16kb' }));
+app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(here, '..', 'public')));
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
@@ -74,12 +77,17 @@ app.get('/api/admin/tenants', requireAdmin, wrap(async (req, res) => {
 
 app.post('/api/admin/tenants/:slug/deploy', requireAdmin, wrap(async (req, res) => {
   const version = typeof req.body?.version === 'string' ? req.body.version : '';
-  res.status(202).json(await P.deployVersion(slugParam(req), version));
+  res.status(202).json(await deployRecorded(slugParam(req), version));
 }));
 
 app.post('/api/admin/tenants/:slug/rollback', requireAdmin, wrap(async (req, res) => {
-  res.status(202).json(await P.rollbackVersion(slugParam(req)));
+  const slug = slugParam(req);
+  const t = await P.getTenant(slug);
+  if (!t?.previous_version) throw new HttpError(409, 'No previous version to roll back to');
+  res.status(202).json(await deployRecorded(slug, t.previous_version, 'rollback'));
 }));
+
+app.use('/api/admin', requireAdmin, releaseRouter);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -94,6 +102,7 @@ app.use((err, req, res, next) => {
 async function main() {
   await initControlDb();
   await P.resumeInterrupted();
+  await resumeBuilds();
   app.listen(config.port, '0.0.0.0', () => {
     console.log(`Voyage control plane listening on :${config.port} (base domain ${config.baseDomain})`);
   });

@@ -19,3 +19,26 @@ CREATE TABLE IF NOT EXISTS tenants (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (admin_email, company_name)
 );
+CREATE TABLE IF NOT EXISTS builds (
+  id BIGSERIAL PRIMARY KEY,
+  version TEXT NOT NULL UNIQUE,
+  commit_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('running','succeeded','failed')),
+  log TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS deployments (
+  id BIGSERIAL PRIMARY KEY,
+  slug TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('deploy','rollback')),
+  from_version TEXT,
+  to_version TEXT NOT NULL,
+  commit_hash TEXT,
+  status TEXT NOT NULL CHECK (status IN ('running','succeeded','failed','rolled_back')),
+  detail TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ
+);
+ALTER TABLE builds ADD COLUMN IF NOT EXISTS commit_message TEXT NOT NULL DEFAULT '';
+ALTER TABLE builds ADD COLUMN IF NOT EXISTS commit_date TEXT NOT NULL DEFAULT '';

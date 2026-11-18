@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { pool } from './db.js';
 import { requireAuth, sign } from './auth.js';
 import { HttpError, text, number, integer, date, time, oneOf } from './validate.js';
+import { themePublic, themePrivate } from './theme.js';
 
 const TRIP_STATUSES = ['planned', 'ongoing', 'completed', 'cancelled'];
 const EVENT_CATEGORIES = ['transport', 'accommodation', 'activity', 'meal', 'other'];
@@ -109,6 +110,8 @@ api.post('/auth/login', wrap(async (req, res) => {
 }));
 
 // ---- Protected endpoints ----
+api.use(themePublic);
+
 api.use(requireAuth);
 
 api.get('/auth/me', (req, res) => {
@@ -250,5 +253,16 @@ api.put('/settings/profile', wrap(async (req, res) => {
     throw err;
   }
 }));
+
+api.get('/whats-new', (req, res) => {
+  res.json({
+    version: process.env.APP_VERSION || 'unknown',
+    commit: (process.env.RELEASE_COMMIT || '').slice(0, 7) || null,
+    message: process.env.RELEASE_MESSAGE || null,
+    releasedAt: process.env.RELEASE_DATE || null,
+  });
+});
+
+api.use(themePrivate);
 
 api.use((req, res) => res.status(404).json({ error: 'Not found' }));
