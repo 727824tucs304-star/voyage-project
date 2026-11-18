@@ -612,6 +612,14 @@ await check('rolling back Client A to an earlier version is recorded and keeps i
   assert.equal((await tenantApi(acmeSlug(), 'GET', '/health')).data.version, v3);
   assert.equal((await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length, trips);
 });
+await check("Client A's Updates page lists the update and the rollback, newest first", async () => {
+  const r = await tenantApi(acmeSlug(), 'GET', '/releases', { token: acme() });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data[0].kind, 'rollback');
+  assert.equal(r.data[0].version, v3);
+  assert.ok(r.data.some((x) => x.kind === 'deploy' && x.version === v4 && x.message === 'Second pages tweak'));
+  assert.ok(r.data.some((x) => x.kind === 'deploy' && x.version === v3));
+});
 await check('invalid requests are refused before anything is built or deployed', async () => {
   const cases = [
     ['/api/admin/releases', { slug: acmeSlug(), sha: 'main' }, 400],

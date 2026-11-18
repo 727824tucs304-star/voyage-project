@@ -254,6 +254,22 @@ api.put('/settings/profile', wrap(async (req, res) => {
   }
 }));
 
+api.get('/releases', wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT id, version, kind, commit_hash, message, released_at FROM release_notes ORDER BY id DESC LIMIT 100'
+  );
+  res.json(rows);
+}));
+
+api.get('/whats-new', (req, res) => {
+  res.json({
+    version: process.env.APP_VERSION || 'unknown',
+    commit: (process.env.RELEASE_COMMIT || '').slice(0, 7) || null,
+    message: process.env.RELEASE_MESSAGE || null,
+    releasedAt: process.env.RELEASE_DATE || null,
+  });
+});
+
 api.use(themePrivate);
 
 api.use((req, res) => res.status(404).json({ error: 'Not found' }));

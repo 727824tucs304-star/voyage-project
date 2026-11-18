@@ -65,3 +65,11 @@ CREATE TABLE IF NOT EXISTS settings_history (
   changed_by TEXT NOT NULL,
   changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS release_notes (
+  id SERIAL PRIMARY KEY,
+  version TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  commit_hash TEXT,
+  message TEXT NOT NULL,
+  released_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

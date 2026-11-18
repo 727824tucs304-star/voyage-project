@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Plane, CalendarDays, MapPin, Wallet, Settings, Palette, LogOut, Compass } from 'lucide-react';
+import { LayoutDashboard, Plane, CalendarDays, MapPin, Wallet, Settings, Palette, History, LogOut, Compass } from 'lucide-react';
 import { api, session } from './api.js';
 import { DEFAULT_THEME, ThemeContext } from './theme.js';
 import {
   LoginPage, DashboardPage, TripsPage, ItineraryPage, DestinationsPage, ExpensesPage, SettingsPage,
 } from './pages.jsx';
 import CustomizePage from './Customize.jsx';
+import UpdatesPage from './Updates.jsx';
 
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
@@ -15,6 +16,7 @@ const NAV = [
   { to: '/destinations', label: 'Destinations', icon: MapPin },
   { to: '/expenses', label: 'Expenses', icon: Wallet },
   { to: '/customize', label: 'Customize', icon: Palette },
+  { to: '/updates', label: 'Updates', icon: History },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -106,6 +108,7 @@ export default function App() {
             <Route path="/destinations" element={<DestinationsPage />} />
             <Route path="/expenses" element={<ExpensesPage />} />
             <Route path="/customize" element={<CustomizePage />} />
+            <Route path="/updates" element={<UpdatesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

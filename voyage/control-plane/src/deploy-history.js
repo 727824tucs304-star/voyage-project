@@ -5,6 +5,7 @@ import { listCommits, getCommit } from './github.js';
 import { isSha } from './git.js';
 import { HttpError } from './errors.js';
 import { audit } from './audit.js';
+import { recordRelease } from './release-notes.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const active = new Set(); // clients with a release in progress
@@ -21,7 +22,7 @@ export async function deployRecorded(slug, version, kind = 'deploy') {
     [slug, kind, before.version, version, build?.commit_hash ?? null]
   );
   audit(`${kind}.start`, { slug, from: before.version, to: version, commit: build?.commit_hash ?? null });
-  watch(rows[0].id, slug, before.version, version, Date.now());
+  watch(rows[0].id, slug, before.version, version, Date.now(), kind);
   return result;
 }
 
@@ -31,7 +32,7 @@ async function finish(id, slug, status, detail) {
 }
 
 // Reads the tenant's actual state until the change lands, is rolled back, or fails.
-async function watch(id, slug, previous, target, startedAt) {
+async function watch(id, slug, previous, target, startedAt, kind) {
   let sawUpdating = false;
   while (Date.now() - startedAt < 15 * 60 * 1000) {
     await sleep(2000);
@@ -39,13 +40,21 @@ async function watch(id, slug, previous, target, startedAt) {
     if (!t) return finish(id, slug, 'failed', 'workspace no longer exists');
     if (t.status === 'updating') sawUpdating = true;
     if (!sawUpdating && Date.now() - startedAt < 15000) continue;
-    if (t.status === 'ready' && t.version === target) return finish(id, slug, 'succeeded', `now on ${target}`);
+    if (t.status === 'ready' && t.version === target) return succeed(id, slug, target, kind);
     if (t.status === 'ready' && t.version === previous && t.error_message?.includes('rolled back')) {
       return finish(id, slug, 'rolled_back', t.error_message);
     }
     if (t.status === 'failed') return finish(id, slug, 'failed', t.error_message || 'unknown error');
   }
   return finish(id, slug, 'failed', 'timed out waiting for the change');
+}
+
+async function succeed(id, slug, target, kind) {
+  const build = await buildFor(target);
+  await recordRelease(slug, {
+    version: target, kind, commit: build?.commit_hash, message: build?.commit_message || `Release ${target}`,
+  }).catch((err) => audit('release_note.error', { slug, error: err.message }));
+  return finish(id, slug, 'succeeded', `now on ${target}`);
 }
 
 async function recordFailure(slug, version, commit, detail) {
