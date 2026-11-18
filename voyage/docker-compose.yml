@@ -32,6 +32,8 @@ services:
       # Only this service can reach Docker. Tenant containers never mount the socket.
       - /var/run/docker.sock:/var/run/docker.sock
       - tenant-nginx-conf:/etc/nginx/tenants
+      # The Git repository (one folder up from this file). Deployment Manager reads it to build images.
+      - ../:/workspace
     group_add:
       - "${DOCKER_GID:-999}"
     networks: [voyage-net]
