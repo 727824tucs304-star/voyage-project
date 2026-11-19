@@ -97,6 +97,7 @@ const control = spawn(process.execPath, ['src/index.js'], {
     GITHUB_BRANCH: 'main',
     GITHUB_TOKEN,
     GITHUB_API_URL: `http://127.0.0.1:${GH_PORT}`,
+    METER_INTERVAL_MS: '3000',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -632,6 +633,32 @@ await check('invalid requests are refused before anything is built or deployed',
     const r = await ctl('POST', p, { ...adminOpts, body });
     assert.equal(r.status, code, `${p} ${JSON.stringify(body)} returned ${r.status}`);
   }
+});
+
+console.log('\n[8] Usage metering');
+await check('usage is metered per client: API requests, storage and running time', async () => {
+  const deadline = Date.now() + 60000;
+  let rows = [];
+  while (Date.now() < deadline) {
+    rows = (await ctl('GET', '/api/admin/usage', adminOpts)).data.tenants;
+    const acmeRow = rows.find((r) => r.slug === acmeSlug());
+    if (rows.length >= 6 && rows.every((r) => Number(r.running_samples) > 0 && Number(r.storage_bytes) > 0) && Number(acmeRow?.api_requests) > 0) break;
+    await sleep(1000);
+  }
+  assert.ok(rows.length >= 6, `expected every client, got ${rows.length}`);
+  assert.ok(rows.every((r) => Number(r.running_samples) > 0), 'running time recorded for every client');
+  assert.ok(rows.every((r) => Number(r.storage_bytes) > 0), 'database size recorded for every client');
+  assert.ok(rows.find((r) => r.slug === acmeSlug()).api_requests > 0, 'API requests recorded for Client A');
+  const usage = await ctl('GET', '/api/admin/usage', adminOpts);
+  assert.equal(usage.data.interval_minutes, 0.05);
+  // The control plane's count must match what the client's own database holds (it may lag by one sample).
+  const pw = await tenantPasswordFromContainer(acmeSlug());
+  const own = new pg.Client({ connectionString: `postgres://tenant_${acmeSlug()}:${pw}@127.0.0.1:5432/tenant_${acmeSlug()}` });
+  await own.connect();
+  const total = Number((await own.query('SELECT SUM(api_requests)::bigint AS n FROM usage_daily')).rows[0].n);
+  await own.end();
+  const recorded = Number(rows.find((r) => r.slug === acmeSlug()).api_requests);
+  assert.ok(recorded > 0 && recorded <= total, `control ${recorded} vs tenant ${total}`);
 });
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);

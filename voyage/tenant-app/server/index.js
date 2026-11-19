@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { initDatabase } from './db.js';
 import { api } from './routes.js';
 import { HttpError } from './validate.js';
+import { countApiRequest } from './usage.js';
 
 if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is required');
 
@@ -12,6 +13,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '100kb' }));
+app.use(countApiRequest);
 app.use('/api', api);
 
 const dist = path.join(here, '..', 'dist');

@@ -9,6 +9,7 @@ import { EMAIL_RE, SLUG_RE, safeEqual } from './security.js';
 import { releaseRouter } from './admin-release.js';
 import { deployRecorded } from './deploy-history.js';
 import { resumeBuilds } from './builds.js';
+import { collectUsage } from './metering.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -89,6 +90,23 @@ app.post('/api/admin/tenants/:slug/rollback', requireAdmin, wrap(async (req, res
 
 app.use('/api/admin', requireAdmin, releaseRouter);
 
+// Usage per client for one month: requests, peak storage, and running time (samples x interval).
+app.get('/api/admin/usage', requireAdmin, wrap(async (req, res) => {
+  const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : new Date().toISOString().slice(0, 7);
+  const { rows } = await db.query(
+    `SELECT t.slug, t.company_name,
+            COALESCE(SUM(u.api_requests), 0)::bigint AS api_requests,
+            COALESCE(MAX(u.storage_bytes), 0)::bigint AS storage_bytes,
+            COALESCE(SUM(u.running_samples), 0)::bigint AS running_samples
+     FROM tenants t
+     LEFT JOIN usage_daily u ON u.slug = t.slug AND to_char(u.day, 'YYYY-MM') = $1
+     GROUP BY t.slug, t.company_name
+     ORDER BY t.company_name`,
+    [month]
+  );
+  res.json({ month, interval_minutes: config.meterIntervalMs / 60000, tenants: rows });
+}));
+
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 app.use((err, req, res, next) => {
@@ -103,6 +121,8 @@ async function main() {
   await initControlDb();
   await P.resumeInterrupted();
   await resumeBuilds();
+  collectUsage().catch((err) => console.error('usage collection failed', err));
+  setInterval(() => collectUsage().catch((err) => console.error('usage collection failed', err)), config.meterIntervalMs);
   app.listen(config.port, '0.0.0.0', () => {
     console.log(`Voyage control plane listening on :${config.port} (base domain ${config.baseDomain})`);
   });

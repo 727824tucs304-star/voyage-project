@@ -73,3 +73,7 @@ CREATE TABLE IF NOT EXISTS release_notes (
   message TEXT NOT NULL,
   released_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS usage_daily (
+  day DATE PRIMARY KEY,
+  api_requests INTEGER NOT NULL DEFAULT 0
+);

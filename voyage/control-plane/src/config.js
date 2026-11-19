@@ -45,4 +45,6 @@ export const config = {
   repoRoot: process.env.REPO_ROOT || '/workspace',
   projectSubdir: process.env.PROJECT_SUBDIR || 'voyage',
   gitAskpass: process.env.GIT_ASKPASS || '',
+  // How often usage is sampled. One sample = one unit of running time.
+  meterIntervalMs: Number(process.env.METER_INTERVAL_MS || 3600000),
 };
