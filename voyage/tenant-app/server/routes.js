@@ -270,6 +270,46 @@ api.get('/whats-new', (req, res) => {
   });
 });
 
+// Trip details: stays, transport, emergency contacts and notes.
+const DETAIL_KINDS = ['stay', 'transport', 'contact', 'note'];
+const detailInput = (b) => {
+  const kind = oneOf(b, 'kind', DETAIL_KINDS);
+  if (!kind) throw new HttpError(400, 'kind is required');
+  const starts_on = date(b, 'starts_on');
+  const ends_on = date(b, 'ends_on');
+  if (starts_on && ends_on && ends_on < starts_on) throw new HttpError(400, 'ends_on must be on or after starts_on');
+  const phone = text(b, 'phone', { max: 20 });
+  if (phone && !/^\+?[0-9 ()-]{6,20}$/.test(phone)) throw new HttpError(400, 'phone looks invalid');
+  return {
+    kind,
+    title: text(b, 'title', { max: 120, required: true }),
+    reference: text(b, 'reference', { max: 60 }),
+    starts_on,
+    ends_on,
+    time_text: text(b, 'time_text', { max: 40 }),
+    phone,
+    amount: number(b, 'amount', { max: 1e9 }),
+    notes: text(b, 'notes', { max: 1000 }),
+  };
+};
+
+api.get('/trips/:id/details', wrap(async (req, res) => {
+  const tripId = idParam(req);
+  await assertTrip(tripId);
+  const { rows } = await pool.query(
+    'SELECT * FROM trip_details WHERE trip_id = $1 ORDER BY kind, starts_on NULLS LAST, id', [tripId]);
+  res.json(rows);
+}));
+api.post('/trips/:id/details', wrap(async (req, res) => {
+  const tripId = idParam(req);
+  await assertTrip(tripId);
+  res.status(201).json(await insert('trip_details', { trip_id: tripId, ...detailInput(req.body) }));
+}));
+api.delete('/details/:id', wrap(async (req, res) => {
+  await remove('trip_details', idParam(req));
+  res.status(204).end();
+}));
+
 api.use(themePrivate);
 
 api.use((req, res) => res.status(404).json({ error: 'Not found' }));

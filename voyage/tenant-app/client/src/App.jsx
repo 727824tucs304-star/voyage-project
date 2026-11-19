@@ -8,6 +8,7 @@ import {
 } from './pages.jsx';
 import CustomizePage from './Customize.jsx';
 import UpdatesPage from './Updates.jsx';
+import TripDetailPage from './TripDetail.jsx';
 
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
@@ -63,10 +64,10 @@ export default function App() {
 
   return (
     <ThemeContext.Provider value={value}>
-      <div className="flex min-h-screen flex-col bg-slate-50 md:flex-row">
-        <aside className="bg-[#0f1f3d] text-slate-200 md:flex md:w-60 md:shrink-0 md:flex-col">
+      <div className="flex min-h-screen flex-col bg-[#faf6ef] md:flex-row">
+        <aside className="bg-[#0f4c4c] text-teal-50 md:flex md:w-60 md:shrink-0 md:flex-col">
           <div className="flex items-center gap-2 px-5 py-4 text-white">
-            <Compass className="h-6 w-6 text-blue-400" />
+            <Compass className="h-6 w-6 text-teal-300" />
             <div className="min-w-0">
               <div className="font-semibold">{theme.app_name}</div>
               <div className="truncate text-xs text-slate-400">{company}</div>
@@ -80,7 +81,7 @@ export default function App() {
                 end={end}
                 className={({ isActive }) =>
                   `flex shrink-0 items-center gap-3 rounded-md px-3 py-2 text-sm ${
-                    isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-white/10'
+                    isActive ? 'bg-teal-600 text-white' : 'text-teal-100 hover:bg-white/10'
                   }`
                 }
               >
@@ -104,6 +105,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/trips" element={<TripsPage />} />
+            <Route path="/trips/:id" element={<TripDetailPage />} />
             <Route path="/itinerary" element={<ItineraryPage />} />
             <Route path="/destinations" element={<DestinationsPage />} />
             <Route path="/expenses" element={<ExpensesPage />} />

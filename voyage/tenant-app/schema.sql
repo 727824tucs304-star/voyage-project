@@ -77,3 +77,18 @@ CREATE TABLE IF NOT EXISTS usage_daily (
   day DATE PRIMARY KEY,
   api_requests INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS trip_details (
+  id SERIAL PRIMARY KEY,
+  trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('stay','transport','contact','note')),
+  title TEXT NOT NULL,
+  reference TEXT,
+  starts_on DATE,
+  ends_on DATE,
+  time_text TEXT,
+  phone TEXT,
+  amount NUMERIC(12,2) CHECK (amount >= 0),
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_trip_details_trip ON trip_details (trip_id, kind);

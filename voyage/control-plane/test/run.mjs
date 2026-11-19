@@ -732,6 +732,39 @@ await check('billing is admin-only; clients cannot reach it and bad input is ref
   assert.equal((await ctl('GET', '/api/admin/billing/history?slug=../etc', adminOpts)).status, 400);
 });
 
+console.log('\n[10] Trip details, CrewRoute defaults and INR');
+await check('trip details: stays, transport, contacts and notes can be added, listed and removed', async () => {
+  const base = `/trips/${ids.trip}/details`;
+  let r = await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'stay', title: 'Hotel Alfama', reference: 'HA123', starts_on: '2099-04-01', ends_on: '2099-04-07', amount: 12000 } });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const detailId = r.data.id;
+  r = await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'contact', title: 'Asha', phone: '+91 98765 43210' } });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  const list = await tenantApi(acmeSlug(), 'GET', base, { token: acme() });
+  assert.equal(list.status, 200);
+  assert.ok(list.data.some((d) => d.title === 'Hotel Alfama' && d.reference === 'HA123'));
+  assert.ok(list.data.some((d) => d.kind === 'contact' && d.phone === '+91 98765 43210'));
+  const del = await tenantApi(acmeSlug(), 'DELETE', `/details/${detailId}`, { token: acme() });
+  assert.equal(del.status, 204);
+});
+await check('trip details are validated and private to the crew that owns the trip', async () => {
+  const base = `/trips/${ids.trip}/details`;
+  assert.equal((await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'hotel', title: 'x' } })).status, 400);
+  assert.equal((await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'contact', title: 'x', phone: 'call-me' } })).status, 400);
+  assert.equal((await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'stay', title: 'x', starts_on: '2099-05-10', ends_on: '2099-05-01' } })).status, 400);
+  const secret = await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'note', title: 'Secret Acme note' } });
+  assert.equal(secret.status, 201);
+  // Bluesky's server answers only from Bluesky's own database, so Acme's entry must never appear there.
+  const other = await tenantApi(slugs['Bluesky Tours'], 'GET', base, { token: tokens['Bluesky Tours'] });
+  assert.ok(!JSON.stringify(other.data ?? '').includes('Secret Acme note'), 'another crew cannot see this trip');
+  await tenantApi(acmeSlug(), 'DELETE', `/details/${secret.data.id}`, { token: acme() });
+});
+await check('the workspace name defaults to CrewRoute with the teal theme', async () => {
+  const r = await tenantApi(acmeSlug(), 'GET', '/theme');
+  assert.equal(r.data.app_name, 'CrewRoute');
+  assert.equal(r.data.button_color, 'teal');
+});
+
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);
 if (failed) console.log('\n--- control plane log (tail) ---\n' + controlLog.slice(-2500));
 

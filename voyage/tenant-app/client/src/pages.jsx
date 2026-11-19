@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Plus, Pencil, Trash2, Save } from 'lucide-react';
 import { api, session } from './api.js';
 import { useTheme, BUTTON_STYLES } from './theme.js';
@@ -7,9 +8,10 @@ const TRIP_STATUSES = ['planned', 'ongoing', 'completed', 'cancelled'];
 const EVENT_CATEGORIES = ['transport', 'accommodation', 'activity', 'meal', 'other'];
 const EXPENSE_CATEGORIES = ['transport', 'accommodation', 'food', 'activities', 'shopping', 'other'];
 
-const money = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(n) || 0);
+export const money = (n) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(n) || 0);
+const daysUntil = (d) => Math.max(0, Math.round((new Date(`${d}T00:00:00`) - new Date(new Date().toDateString())) / 86400000));
 const label = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
-const fmtDate = (d) =>
+export const fmtDate = (d) =>
   d ? new Date(`${d}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 const opts = (list) => list.map((v) => ({ value: v, label: label(v) }));
 const inputCls =
@@ -315,7 +317,7 @@ export function LoginPage({ onLogin }) {
     <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
       <Card className="w-full max-w-sm p-6">
         <div className="mb-5 flex items-center gap-2 text-slate-900">
-          <span className="text-xl font-semibold">Voyage</span>
+          <span className="text-xl font-semibold">CrewRoute</span>
         </div>
         <h1 className="mb-4 text-lg font-medium">Sign in</h1>
         <form onSubmit={submit} className="space-y-4">
@@ -340,6 +342,7 @@ export function LoginPage({ onLogin }) {
 export function DashboardPage() {
   const { data: stats, error } = useApi('/dashboard/stats');
   const { data: upcoming } = useApi('/dashboard/upcoming');
+  const { data: release, error: releaseErr } = useApi('/whats-new');
   const cards = stats
     ? [
         ['Total trips', stats.total_trips],
@@ -361,6 +364,36 @@ export function DashboardPage() {
           </Card>
         ))}
       </div>
+      {upcoming?.[0] && (
+        <Card className="mt-6 flex items-center justify-between p-5">
+          <div>
+            <div className="text-sm text-slate-500">Next trip</div>
+            <div className="text-lg font-semibold text-slate-900">{upcoming[0].title}</div>
+            <div className="text-sm text-slate-500">{fmtDate(upcoming[0].start_date)}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-3xl font-semibold text-teal-700">{daysUntil(upcoming[0].start_date)}</div>
+            <div className="text-xs text-slate-500">days to go</div>
+          </div>
+        </Card>
+      )}
+      {!releaseErr && (
+        <Card className="mt-6 p-5">
+          <div className="font-medium text-slate-900">What's new</div>
+          {!release ? (
+            <p className="mt-1 text-sm text-slate-500">Loading…</p>
+          ) : release.message ? (
+            <p className="mt-1 text-sm text-slate-700">
+              {release.message}
+              <span className="ml-2 text-xs text-slate-500">
+                {release.releasedAt ? new Date(release.releasedAt).toLocaleDateString() : ''} · version {release.version}
+              </span>
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-slate-500">Version {release.version}. No release notes.</p>
+          )}
+        </Card>
+      )}
       <Card className="mt-6">
         <div className="border-b border-slate-200 px-5 py-3 font-medium text-slate-900">Upcoming trips</div>
         {!upcoming ? (
@@ -404,7 +437,7 @@ export function TripsPage() {
     },
     { name: 'start_date', label: 'Start date', type: 'date', required: true },
     { name: 'end_date', label: 'End date', type: 'date', required: true },
-    { name: 'budget', label: 'Budget (USD)', type: 'number', step: '0.01', min: 0, default: 0 },
+    { name: 'budget', label: 'Budget (₹)', type: 'number', step: '0.01', min: 0, default: 0 },
     { name: 'status', label: 'Status', type: 'select', options: opts(TRIP_STATUSES), default: 'planned' },
   ];
   return (
@@ -416,7 +449,7 @@ export function TripsPage() {
       fields={fields}
       emptyText="No trips yet. Add your first trip."
       columns={[
-        { key: 'title', label: 'Trip', render: (r) => <span className="font-medium text-slate-900">{r.title}</span> },
+        { key: 'title', label: 'Trip', render: (r) => <Link to={`/trips/${r.id}`} className="font-medium text-teal-800 hover:underline">{r.title}</Link> },
         { key: 'destination_name', label: 'Destination', render: (r) => r.destination_name || '—' },
         { key: 'dates', label: 'Dates', render: (r) => `${fmtDate(r.start_date)} – ${fmtDate(r.end_date)}` },
         { key: 'budget', label: 'Budget', render: (r) => money(r.budget) },
@@ -441,7 +474,7 @@ export function ItineraryPage() {
     { name: 'event_date', label: 'Date', type: 'date', required: true },
     { name: 'event_time', label: 'Time', type: 'time' },
     { name: 'category', label: 'Category', type: 'select', options: opts(EVENT_CATEGORIES), default: 'activity' },
-    { name: 'estimated_cost', label: 'Estimated cost (USD)', type: 'number', step: '0.01', min: 0, default: 0 },
+    { name: 'estimated_cost', label: 'Estimated cost (₹)', type: 'number', step: '0.01', min: 0, default: 0 },
     { name: 'description', label: 'Description', type: 'textarea' },
   ];
 
@@ -514,7 +547,7 @@ export function ExpensesPage() {
   const { data: trips } = useApi('/trips');
   const fields = [
     { name: 'description', label: 'Description', required: true, maxLength: 200 },
-    { name: 'amount', label: 'Amount (USD)', type: 'number', step: '0.01', min: 0, required: true },
+    { name: 'amount', label: 'Amount (₹)', type: 'number', step: '0.01', min: 0, required: true },
     { name: 'category', label: 'Category', type: 'select', options: opts(EXPENSE_CATEGORIES), default: 'other' },
     { name: 'expense_date', label: 'Date', type: 'date', required: true },
     {
