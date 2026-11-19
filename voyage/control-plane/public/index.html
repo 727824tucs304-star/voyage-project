@@ -63,6 +63,7 @@ function shell(active, html) {
     <nav class="side">
       <a href="#/admin" class="${active === 'tenants' ? 'on' : ''}">Tenants</a>
       <a href="#/admin/dev" class="${active === 'dev' ? 'on' : ''}">Deployment Manager</a>
+      <a href="#/admin/billing" class="${active === 'billing' ? 'on' : ''}">Usage &amp; Billing</a>
     </nav>
     <div class="main">${html}</div></div>`;
 }
@@ -357,6 +358,124 @@ async function deployChanges() {
   }
 }
 
+let billState = { month: new Date().toISOString().slice(0, 7), slug: '' };
+const money = (n) => `$${Number(n || 0).toFixed(2)}`;
+const num = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
+const SYNC_TEXT = { ok: 'Synchronised', not_configured: 'Not configured: AWS permissions are missing', error: 'Last sync failed', never_synced: 'Never synchronised', running: 'Running' };
+
+async function billingPage() {
+  if (!token()) return adminLogin();
+  shell('billing', '<p class="muted">Loading…</p>');
+  try {
+    const [b, tenants, pricing] = await Promise.all([
+      A('GET', `/api/admin/billing?month=${encodeURIComponent(billState.month)}&slug=${encodeURIComponent(billState.slug)}`),
+      A('GET', '/api/admin/tenants'),
+      A('GET', '/api/admin/pricing'),
+    ]);
+    const history = billState.slug ? await A('GET', `/api/admin/billing/history?slug=${encodeURIComponent(billState.slug)}`) : [];
+    renderBilling(b, tenants, pricing, history);
+  } catch (e) {
+    shell('billing', `<div class="card err">${esc(e.message)}</div>`);
+  }
+}
+
+function renderBilling(b, tenants, pricing, history) {
+  const o = b.overview;
+  const totals = b.tenants.reduce((t, x) => ({
+    requests: t.requests + x.requests, storage: t.storage + x.storage_mb, net: t.net + x.network_gb,
+    cpu: t.cpu + x.cpu_avg_percent, mem: t.mem + x.mem_avg_gb, n: t.n + 1,
+  }), { requests: 0, storage: 0, net: 0, cpu: 0, mem: 0, n: 0 });
+  const maxReq = Math.max(1, ...b.daily.map((d) => d.requests));
+  const bars = b.daily.map((d) => `<div title="${esc(d.day)}: ${num(d.requests)} requests"
+    style="flex:1;background:#2563eb;height:${Math.max(2, (d.requests / maxReq) * 120)}px;border-radius:3px 3px 0 0"></div>`).join('');
+  const rate = (k) => pricing.rates[k];
+  const rateRows = Object.keys(pricing.labels).map((k) =>
+    `<label style="display:flex;gap:10px;align-items:center;margin:6px 0"><span style="flex:1">${esc(pricing.labels[k])}</span>
+     <input data-rate="${esc(k)}" type="number" step="any" min="0" value="${esc(rate(k))}" style="width:130px"></label>`).join('');
+  shell('billing', `
+    <div class="card bar">
+      <h2 style="margin:0;flex:1">Usage &amp; Billing</h2>
+      <label style="margin:0">Month <input id="bMonth" type="month" value="${esc(b.month)}" style="width:auto"></label>
+      <label style="margin:0">Client <select id="bSlug" style="width:auto"><option value="">All clients</option>
+        ${tenants.map((t) => `<option value="${esc(t.slug)}" ${t.slug === billState.slug ? 'selected' : ''}>${esc(t.companyName)}</option>`).join('')}</select></label>
+      <button class="ghost" id="bCollect">Collect usage now</button>
+      <button class="ghost" id="bSync">Sync AWS costs</button>
+    </div>
+    <p class="muted" style="margin:4px 0 12px">Estimated figures are calculated by the platform. AWS-reported figures come from Cost Explorer and are delayed about one day.</p>
+    <div class="grid2" style="grid-template-columns:repeat(4,1fr)">
+      <div class="card" style="padding:14px"><div class="muted">AWS infrastructure cost</div><div style="font-size:22px;font-weight:600">${money(o.aws_total)}</div><span class="badge" style="background:#e0e7ff">AWS-reported</span></div>
+      <div class="card" style="padding:14px"><div class="muted">Estimated customer charges</div><div style="font-size:22px;font-weight:600">${money(o.customer_charges)}</div><span class="badge" style="background:#dcfce7">Estimated</span></div>
+      <div class="card" style="padding:14px"><div class="muted">Allocated infrastructure cost</div><div style="font-size:22px;font-weight:600">${money(o.allocated_aws)}</div><span class="badge" style="background:#dcfce7">Estimated</span></div>
+      <div class="card" style="padding:14px"><div class="muted">Active clients</div><div style="font-size:22px;font-weight:600">${o.active_tenants}</div><span class="badge" style="background:#dcfce7">Live</span></div>
+    </div>
+    <div class="grid2" style="margin-top:16px">
+      <div class="card">
+        <h3 style="margin-top:0">AWS cost overview</h3>
+        <p>Status: <strong>${esc(SYNC_TEXT[b.aws_sync.status] || b.aws_sync.status)}</strong></p>
+        <p class="muted">${esc(b.aws_sync.message || '')}</p>
+        <p class="muted">Last successful sync: ${esc(b.aws_sync.last_success ? new Date(b.aws_sync.last_success).toLocaleString() : 'never')}</p>
+        ${b.aws.services.length ? `<table><tr><th>Service</th><th>Cost</th></tr>${b.aws.services.map((s) =>
+          `<tr><td>${esc(s.service)}</td><td>${money(s.amount)}</td></tr>`).join('')}</table>` : '<p class="muted">No AWS cost data for this month yet.</p>'}
+        <p class="muted" style="margin-top:8px">Unallocated AWS cost (not charged to clients): ${money(o.unallocated_aws)}</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">Usage analytics (all clients)</h3>
+        <table>
+          <tr><td>API requests</td><td style="text-align:right">${num(totals.requests)}</td></tr>
+          <tr><td>Average CPU per client</td><td style="text-align:right">${totals.n ? num(totals.cpu / totals.n) : 0}%</td></tr>
+          <tr><td>Average memory per client</td><td style="text-align:right">${totals.n ? num(totals.mem / totals.n) : 0} GB</td></tr>
+          <tr><td>Database storage (peak, sum)</td><td style="text-align:right">${num(totals.storage)} MB</td></tr>
+          <tr><td>Network transfer</td><td style="text-align:right">${num(totals.net)} GB</td></tr>
+        </table>
+        <h3>Daily API requests</h3>
+        <div style="display:flex;gap:3px;align-items:flex-end;height:130px;border-bottom:1px solid #e2e8f0">${bars || '<span class="muted">No daily data for this month yet.</span>'}</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3 style="margin-top:0">Tenant breakdown</h3>
+      <div style="overflow-x:auto"><table>
+        <tr><th>Client</th><th>Requests</th><th>CPU avg</th><th>Memory avg</th><th>Storage</th><th>Network</th><th>Usage charges</th><th>Allocated AWS</th><th>Total estimated bill</th></tr>
+        ${b.tenants.map((t) => `<tr data-tenant="${esc(t.slug)}" style="cursor:pointer">
+          <td><strong>${esc(t.company_name)}</strong></td><td>${num(t.requests)}</td><td>${num(t.cpu_avg_percent)}%</td>
+          <td>${num(t.mem_avg_gb)} GB</td><td>${num(t.storage_mb)} MB</td><td>${num(t.network_gb)} GB</td>
+          <td>${money(t.usage_charges)}</td><td>${money(t.allocated_aws.total)}</td>
+          <td><strong>${money(t.total_bill)}</strong></td></tr>`).join('') || '<tr><td colspan="9" class="muted">No clients yet.</td></tr>'}
+      </table></div>
+      <p class="muted" style="font-size:13px">Allocated AWS = EC2 cost shared by CPU and memory use, EBS by storage, and data transfer by network. Click a row to see its history.</p>
+    </div>
+    ${billState.slug && history.length ? `<div class="card" style="margin-top:16px"><h3 style="margin-top:0">Billing history</h3>
+      <table><tr><th>Month</th><th>Usage charges</th><th>Allocated AWS</th><th>Platform fee</th><th>Total</th></tr>
+      ${history.map((h) => `<tr><td>${esc(h.month)}</td><td>${money(h.usage_charges)}</td><td>${money(h.allocated_aws)}</td><td>${money(h.platform_fee)}</td><td><strong>${money(h.total)}</strong></td></tr>`).join('')}
+      </table></div>` : ''}
+    <div class="card" style="margin-top:16px">
+      <h3 style="margin-top:0">Pricing</h3>
+      <p class="muted">Changes apply to the next calculation. Allocation weights must add up to 1.</p>
+      ${rateRows}
+      <div class="bar" style="margin-top:10px"><button id="pSave">Save pricing</button><span id="pMsg" class="muted"></span></div>
+    </div>`);
+
+  document.getElementById('bMonth').onchange = (e) => { billState.month = e.target.value; billingPage(); };
+  document.getElementById('bSlug').onchange = (e) => { billState.slug = e.target.value; billingPage(); };
+  document.getElementById('bCollect').onclick = async () => {
+    try { await A('POST', '/api/admin/usage/collect'); billingPage(); } catch (e) { alert(e.message); }
+  };
+  document.getElementById('bSync').onclick = async () => {
+    try { await A('POST', '/api/admin/aws/sync'); billingPage(); } catch (e) { alert(e.message); }
+  };
+  document.querySelectorAll('[data-tenant]').forEach((tr) => tr.onclick = () => { billState.slug = tr.dataset.tenant; billingPage(); });
+  document.getElementById('pSave').onclick = async () => {
+    const rates = {};
+    document.querySelectorAll('[data-rate]').forEach((i) => { rates[i.dataset.rate] = i.value; });
+    const msg = document.getElementById('pMsg');
+    try {
+      await A('PUT', '/api/admin/pricing', { rates });
+      msg.textContent = 'Saved. Bills recalculate on the next view.';
+      msg.className = 'ok';
+      setTimeout(billingPage, 600);
+    } catch (e) { msg.textContent = e.message; msg.className = 'err'; }
+  };
+}
+
 app.addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-action]');
   if (!btn) return;
@@ -386,6 +505,7 @@ function route() {
   clearTimeout(timer);
   const h = location.hash || '#/';
   if (h.startsWith('#/status/')) return status(decodeURIComponent(h.slice(9)));
+  if (h === '#/admin/billing') return billingPage();
   if (h === '#/admin/dev') return devManager();
   if (h === '#/admin') return admin();
   return register();

@@ -47,4 +47,6 @@ export const config = {
   gitAskpass: process.env.GIT_ASKPASS || '',
   // How often usage is sampled. One sample = one unit of running time.
   meterIntervalMs: Number(process.env.METER_INTERVAL_MS || 3600000),
+  // AWS cost sync frequency. Cost Explorer data changes slowly, so syncing every few hours is enough.
+  awsSyncIntervalMs: Number(process.env.AWS_SYNC_INTERVAL_MS || 6 * 3600000),
 };

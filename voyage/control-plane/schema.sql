@@ -50,3 +50,38 @@ CREATE TABLE IF NOT EXISTS usage_daily (
   running_samples INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (slug, day)
 );
+ALTER TABLE usage_daily ADD COLUMN IF NOT EXISTS cpu_percent_sum DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE usage_daily ADD COLUMN IF NOT EXISTS stat_samples INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE usage_daily ADD COLUMN IF NOT EXISTS mem_bytes_sum DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE usage_daily ADD COLUMN IF NOT EXISTS mem_peak_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE usage_daily ADD COLUMN IF NOT EXISTS network_bytes BIGINT NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS pricing_rules (
+  key TEXT PRIMARY KEY,
+  value NUMERIC NOT NULL CHECK (value >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by TEXT
+);
+CREATE TABLE IF NOT EXISTS aws_cost_records (
+  period_month TEXT NOT NULL,
+  service TEXT NOT NULL,
+  amount_usd NUMERIC NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (period_month, service)
+);
+CREATE TABLE IF NOT EXISTS aws_sync_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  status TEXT NOT NULL,
+  message TEXT,
+  last_attempt TIMESTAMPTZ,
+  last_success TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS billing_summaries (
+  slug TEXT NOT NULL REFERENCES tenants(slug),
+  month TEXT NOT NULL,
+  usage_charges NUMERIC NOT NULL,
+  allocated_aws NUMERIC NOT NULL,
+  platform_fee NUMERIC NOT NULL,
+  total NUMERIC NOT NULL,
+  computed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (slug, month)
+);

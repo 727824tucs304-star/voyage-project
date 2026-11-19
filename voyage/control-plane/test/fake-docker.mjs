@@ -16,11 +16,14 @@ function setHosts(name, ip) {
   fs.writeFileSync('/etc/hosts', lines.join('\n') + '\n');
 }
 
-export function startFakeDocker({ socketPath, tenantEntry, nginxMain, logDir }) {
+export function startFakeDocker({ socketPath, tenantEntry, nginxMain, logDir, imageFile }) {
   const containers = new Map();
   const execs = new Map();
   const ips = new Map();
   const images = new Set(['voyage-tenant:v1', 'voyage-tenant:v2']);
+  const extra = () => (fs.existsSync(imageFile) ? fs.readFileSync(imageFile, 'utf8').split('\n').filter(Boolean) : []);
+  const hasImage = (t) => images.has(t) || extra().includes(t);
+  const allImages = () => [...new Set([...images, ...extra()])];
   let networkReady = false;
   let seq = 1000;
   // The edge proxy is a long-running container on the host; it has no tenant process.
@@ -85,10 +88,10 @@ export function startFakeDocker({ socketPath, tenantEntry, nginxMain, logDir }) 
     const p = decodeURIComponent(url.pathname);
     let m;
     if (method === 'GET' && p === '/images/json') {
-      return send(200, [...images].map((t) => ({ RepoTags: [t] })));
+      return send(200, allImages().map((t) => ({ RepoTags: [t] })));
     }
     if (method === 'GET' && (m = p.match(/^\/images\/(.+)\/json$/))) {
-      return images.has(m[1]) ? send(200, { Id: m[1] }) : send(404, { message: 'no such image' });
+      return hasImage(m[1]) ? send(200, { Id: m[1] }) : send(404, { message: 'no such image' });
     }
     if (method === 'GET' && (m = p.match(/^\/networks\/(.+)$/))) {
       return networkReady && m[1] === 'voyage-net' ? send(200, { Name: m[1] }) : send(404, { message: 'network not found' });
@@ -100,7 +103,7 @@ export function startFakeDocker({ socketPath, tenantEntry, nginxMain, logDir }) 
     if (method === 'POST' && p === '/containers/create') {
       const name = url.searchParams.get('name');
       if (containers.has(name)) return send(409, { message: 'Conflict: container name already in use' });
-      if (!images.has(body.Image)) return send(404, { message: `No such image: ${body.Image}` });
+      if (!hasImage(body.Image)) return send(404, { message: `No such image: ${body.Image}` });
       if (body.HostConfig?.NetworkMode !== 'voyage-net') return send(400, { message: 'unexpected network' });
       const Id = `c${(seq++).toString(16)}`;
       containers.set(name, {
@@ -135,6 +138,19 @@ export function startFakeDocker({ socketPath, tenantEntry, nginxMain, logDir }) 
       setHosts(c.name, null);
       containers.delete(c.name);
       return send(204);
+    }
+    if (method === 'GET' && (m = p.match(/^\/containers\/([^/]+)\/stats$/))) {
+      const c = containers.get(m[1]);
+      if (!c || !c.State.Running) return send(404, { message: 'no such container' });
+      // Steady 25% of one CPU, 150 MB of memory, and growing network counters (Docker's one-shot stats shape).
+      const now = Date.now() * 1e6;
+      const sysNow = now, sysPrev = now - 1e9;
+      return send(200, {
+        cpu_stats: { cpu_usage: { total_usage: sysNow * 0.25 }, system_cpu_usage: sysNow, online_cpus: 1 },
+        precpu_stats: { cpu_usage: { total_usage: sysPrev * 0.25 }, system_cpu_usage: sysPrev, online_cpus: 1 },
+        memory_stats: { usage: 150 * 1024 * 1024, limit: 1024 * 1024 * 1024 },
+        networks: { eth0: { rx_bytes: 500000 + Math.floor(Date.now() / 1000), tx_bytes: 250000 } },
+      });
     }
     if (method === 'POST' && (m = p.match(/^\/containers\/([^/]+)\/exec$/))) {
       const c = containers.get(m[1]);

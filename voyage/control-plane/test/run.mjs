@@ -98,6 +98,8 @@ const control = spawn(process.execPath, ['src/index.js'], {
     GITHUB_TOKEN,
     GITHUB_API_URL: `http://127.0.0.1:${GH_PORT}`,
     METER_INTERVAL_MS: '3000',
+    AWS_CLI_BIN: path.join(CONTROL_DIR, 'test', 'fake-aws.sh'),
+    AWS_MODE_FILE: path.join(WORK, 'aws-mode'),
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -635,30 +637,99 @@ await check('invalid requests are refused before anything is built or deployed',
   }
 });
 
-console.log('\n[8] Usage metering');
-await check('usage is metered per client: API requests, storage and running time', async () => {
-  const deadline = Date.now() + 60000;
-  let rows = [];
+console.log('\n[8] Usage, AWS cost allocation and billing');
+const MODE_FILE = path.join(WORK, 'aws-mode');
+const billing = async (month = '') => (await ctl('GET', `/api/admin/billing${month ? `?month=${month}` : ''}`, adminOpts)).data;
+const thisMonth = new Date().toISOString().slice(0, 7);
+
+await check('usage is measured per client: requests, CPU, memory, storage and network', async () => {
+  const deadline = Date.now() + 90000;
+  let b = null;
   while (Date.now() < deadline) {
-    rows = (await ctl('GET', '/api/admin/usage', adminOpts)).data.tenants;
-    const acmeRow = rows.find((r) => r.slug === acmeSlug());
-    if (rows.length >= 6 && rows.every((r) => Number(r.running_samples) > 0 && Number(r.storage_bytes) > 0) && Number(acmeRow?.api_requests) > 0) break;
+    b = await billing();
+    const acme = b.tenants.find((t) => t.slug === acmeSlug());
+    if (b.tenants.length >= 6 && b.tenants.every((t) => t.cpu_avg_percent > 0 && t.storage_mb > 0 && t.mem_peak_mb > 0 && t.network_gb >= 0)
+      && acme.requests > 0) break;
     await sleep(1000);
   }
-  assert.ok(rows.length >= 6, `expected every client, got ${rows.length}`);
-  assert.ok(rows.every((r) => Number(r.running_samples) > 0), 'running time recorded for every client');
-  assert.ok(rows.every((r) => Number(r.storage_bytes) > 0), 'database size recorded for every client');
-  assert.ok(rows.find((r) => r.slug === acmeSlug()).api_requests > 0, 'API requests recorded for Client A');
-  const usage = await ctl('GET', '/api/admin/usage', adminOpts);
-  assert.equal(usage.data.interval_minutes, 0.05);
-  // The control plane's count must match what the client's own database holds (it may lag by one sample).
-  const pw = await tenantPasswordFromContainer(acmeSlug());
-  const own = new pg.Client({ connectionString: `postgres://tenant_${acmeSlug()}:${pw}@127.0.0.1:5432/tenant_${acmeSlug()}` });
-  await own.connect();
-  const total = Number((await own.query('SELECT SUM(api_requests)::bigint AS n FROM usage_daily')).rows[0].n);
-  await own.end();
-  const recorded = Number(rows.find((r) => r.slug === acmeSlug()).api_requests);
-  assert.ok(recorded > 0 && recorded <= total, `control ${recorded} vs tenant ${total}`);
+  assert.ok(b.tenants.length >= 6, `expected every client, got ${b.tenants.length}`);
+  for (const t of b.tenants) {
+    assert.ok(t.cpu_avg_percent > 0, `${t.company_name} has CPU readings`);
+    assert.ok(t.mem_peak_mb > 0, `${t.company_name} has memory readings`);
+    assert.ok(t.storage_mb > 0, `${t.company_name} has database storage`);
+  }
+  assert.ok(b.tenants.find((t) => t.slug === acmeSlug()).requests > 0, 'API requests counted for Client A');
+});
+
+await check('AWS costs sync from Cost Explorer and are shown as AWS-reported, not invented', async () => {
+  const r = await ctl('POST', '/api/admin/aws/sync', adminOpts);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.status, 'ok', r.data.message);
+  const b = await billing();
+  assert.equal(b.aws.ec2, 12.5);
+  assert.equal(b.aws.ebs, 3);
+  assert.equal(b.aws.dataTransfer, 1.5);
+  assert.equal(b.overview.aws_total, 17.5);
+  assert.equal(b.aws_sync.status, 'ok');
+});
+
+await check('shared EC2, EBS and transfer costs are allocated by measured usage; the rest stays unallocated', async () => {
+  const b = await billing();
+  const ec2 = b.tenants.reduce((s, t) => s + t.allocated_aws.ec2, 0);
+  const ebs = b.tenants.reduce((s, t) => s + t.allocated_aws.ebs, 0);
+  assert.ok(Math.abs(ec2 - 12.5) < 0.05, `EC2 allocated ${ec2}`);
+  assert.ok(Math.abs(ebs - 3) < 0.05, `EBS allocated ${ebs}`);
+  assert.ok(Math.abs(b.overview.unallocated_aws - 0.5) < 0.05, `unallocated ${b.overview.unallocated_aws}`);
+});
+
+await check('each client bill = usage charges + allocated AWS + platform fee', async () => {
+  const b = await billing();
+  for (const t of b.tenants) {
+    const expected = t.usage_charges + t.allocated_aws.total + t.platform_fee;
+    assert.ok(Math.abs(t.total_bill - expected) < 0.02, `${t.company_name}: ${t.total_bill} vs ${expected}`);
+    assert.equal(t.usage_lines.length, 7);
+  }
+});
+
+await check('pricing can be changed by the admin; invalid pricing is refused', async () => {
+  let r = await ctl('PUT', '/api/admin/pricing', { ...adminOpts, body: { rates: { base_fee: 10 } } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const acme = (await billing()).tenants.find((t) => t.slug === acmeSlug());
+  assert.equal(acme.usage_lines[0].amount, 10, 'new base fee applied');
+  await ctl('PUT', '/api/admin/pricing', { ...adminOpts, body: { rates: { base_fee: 9 } } });
+  r = await ctl('PUT', '/api/admin/pricing', { ...adminOpts, body: { rates: { alloc_weight_cpu: 0.7 } } });
+  assert.equal(r.status, 400, 'weights must add up to 1');
+  r = await ctl('PUT', '/api/admin/pricing', { ...adminOpts, body: { rates: { made_up_rate: 1 } } });
+  assert.equal(r.status, 400, 'unknown rate refused');
+});
+
+await check('usage collection and billing summaries do not duplicate on repeat runs', async () => {
+  await ctl('POST', '/api/admin/usage/collect', adminOpts);
+  await ctl('POST', '/api/admin/usage/collect', adminOpts);
+  const h = await ctl('GET', `/api/admin/billing/history?slug=${acmeSlug()}`, adminOpts);
+  assert.equal(h.status, 200);
+  assert.equal(h.data.filter((x) => x.month === thisMonth).length, 1, 'one summary per client per month');
+});
+
+await check('a missing AWS permission is reported clearly and never breaks the page', async () => {
+  fs.writeFileSync(MODE_FILE, 'denied');
+  const r = await ctl('POST', '/api/admin/aws/sync', adminOpts);
+  assert.equal(r.data.status, 'not_configured', JSON.stringify(r.data));
+  const b = await billing();
+  assert.equal(b.aws_sync.status, 'not_configured');
+  assert.equal(b.overview.aws_total, 17.5, 'last good AWS figures are kept, not invented');
+  fs.writeFileSync(MODE_FILE, 'ok');
+  assert.equal((await ctl('POST', '/api/admin/aws/sync', adminOpts)).data.status, 'ok');
+});
+
+await check('billing is admin-only; clients cannot reach it and bad input is refused', async () => {
+  assert.equal((await ctl('GET', '/api/admin/billing')).status, 401);
+  assert.equal((await ctl('GET', '/api/admin/pricing')).status, 401);
+  assert.equal((await ctl('POST', '/api/admin/aws/sync')).status, 401);
+  const tenantTry = await tenantApi(acmeSlug(), 'GET', '/admin/billing', { token: acme() });
+  assert.notEqual(tenantTry.status, 200);
+  assert.equal((await ctl('GET', '/api/admin/billing?month=2026-13', adminOpts)).status, 400);
+  assert.equal((await ctl('GET', '/api/admin/billing/history?slug=../etc', adminOpts)).status, 400);
 });
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);

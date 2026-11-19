@@ -64,6 +64,12 @@ export async function createContainer(name, spec) {
   if (r.status !== 201) throw new Error(`create ${name} failed: ${r.data?.message || `HTTP ${r.status}`}`);
 }
 
+// One-shot resource sample for a container (CPU, memory, network counters).
+export async function containerStats(name) {
+  const r = await request('GET', `/containers/${encodeURIComponent(name)}/stats?stream=false`);
+  return r.status === 200 ? r.data : null;
+}
+
 export async function startContainer(name) {
   const r = await request('POST', `/containers/${encodeURIComponent(name)}/start`);
   if (r.status !== 204 && r.status !== 304) throw new Error(`start ${name} failed: ${r.data?.message || `HTTP ${r.status}`}`);
