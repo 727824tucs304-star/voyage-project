@@ -98,6 +98,7 @@ const control = spawn(process.execPath, ['src/index.js'], {
     GITHUB_TOKEN,
     GITHUB_API_URL: `http://127.0.0.1:${GH_PORT}`,
     METER_INTERVAL_MS: '3000',
+    STORAGE_ROOT: path.join(WORK, 'files'),
     AWS_CLI_BIN: path.join(CONTROL_DIR, 'test', 'fake-aws.sh'),
     AWS_MODE_FILE: path.join(WORK, 'aws-mode'),
   },
@@ -759,10 +760,77 @@ await check('trip details are validated and private to the crew that owns the tr
   assert.ok(!JSON.stringify(other.data ?? '').includes('Secret Acme note'), 'another crew cannot see this trip');
   await tenantApi(acmeSlug(), 'DELETE', `/details/${secret.data.id}`, { token: acme() });
 });
-await check('the workspace name defaults to CrewRoute with the teal theme', async () => {
+await check('the workspace name defaults to Vespera with the violet theme', async () => {
   const r = await tenantApi(acmeSlug(), 'GET', '/theme');
-  assert.equal(r.data.app_name, 'CrewRoute');
-  assert.equal(r.data.button_color, 'teal');
+  assert.equal(r.data.app_name, 'Vespera');
+  assert.equal(r.data.button_color, 'violet');
+});
+
+console.log('\n[11] Vespera meetings, recordings and processing status');
+let meetingId = null, recordingId = null;
+const MP3 = Buffer.alloc(4096, 7);
+const upload = (slug, id, name, type, bytes, consent, token) => fetch(`http://voyage-tenant-${slug}:3000/api/meetings/${id}/recording`, {
+  method: 'POST',
+  headers: { 'Content-Type': type, 'x-file-name': encodeURIComponent(name), ...(consent ? { 'x-consent': 'confirmed' } : {}), Authorization: `Bearer ${token}` },
+  body: bytes,
+});
+
+await check('a meeting is created with category, date and participants', async () => {
+  const r = await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: 'Intake: Sharma v. Rao', category: 'legal_intake', meeting_date: '2099-03-02', participants: 'Adv. Mehta, Client Sharma' } });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.deepEqual(r.data.participants, ['Adv. Mehta', 'Client Sharma']);
+  meetingId = r.data.id;
+});
+await check('meeting input is validated', async () => {
+  assert.equal((await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { category: 'legal_intake', meeting_date: '2099-03-02' } })).status, 400);
+  assert.equal((await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: 'x', category: 'healthcare', meeting_date: '2099-03-02' } })).status, 400);
+});
+await check('uploads reject unsupported files and uploads without consent', async () => {
+  assert.equal((await upload(acmeSlug(), meetingId, 'setup.exe', 'application/octet-stream', MP3, true, acme())).status, 415);
+  assert.equal((await upload(acmeSlug(), meetingId, 'call.mp3', 'audio/mpeg', MP3, false, acme())).status, 400);
+});
+await check('an accepted recording is stored privately and queued; a second upload waits for the active job', async () => {
+  const ok = await upload(acmeSlug(), meetingId, 'intake.mp3', 'audio/mpeg', MP3, true, acme());
+  assert.equal(ok.status, 201, await ok.text());
+  assert.equal((await upload(acmeSlug(), meetingId, 'intake2.mp3', 'audio/mpeg', MP3, true, acme())).status, 409);
+  const m = (await tenantApi(acmeSlug(), 'GET', `/meetings/${meetingId}`, { token: acme() })).data;
+  assert.equal(m.status, 'queued');
+  assert.equal(m.recordings.length, 1);
+  recordingId = m.recordings[0].id;
+});
+await check('dashboard counts come from the database, and no processing is faked', async () => {
+  const s = (await tenantApi(acmeSlug(), 'GET', '/meetings/stats', { token: acme() })).data;
+  assert.ok(s.total_meetings >= 1);
+  assert.equal(s.pending_jobs, 1);
+  assert.equal(s.processed, 0);
+  const p = (await tenantApi(acmeSlug(), 'GET', '/processing/status', { token: acme() })).data;
+  assert.equal(p.transcription.configured, false);
+  assert.equal(p.ai.configured, false);
+  const m = (await tenantApi(acmeSlug(), 'GET', `/meetings/${meetingId}`, { token: acme() })).data;
+  assert.notEqual(m.status, 'completed');
+});
+await check('another crew cannot see or download this meeting or recording', async () => {
+  const bl = slugs['Bluesky Tours'];
+  assert.equal((await tenantApi(bl, 'GET', `/meetings/${meetingId}`, { token: tokens['Bluesky Tours'] })).status, 404);
+  assert.equal((await fetch(`http://voyage-tenant-${bl}:3000/api/meetings/${meetingId}/recordings/${recordingId}`, { headers: { Authorization: `Bearer ${tokens['Bluesky Tours']}` } })).status, 404);
+});
+await check('the recording survives a container restart and downloads intact', async () => {
+  await dockerApi('POST', `/containers/voyage-tenant-${acmeSlug()}/stop`);
+  await dockerApi('POST', `/containers/voyage-tenant-${acmeSlug()}/start`);
+  await waitFor(async () => (await tenantApi(acmeSlug(), 'GET', '/health')).status === 200, 'acme back');
+  const r = await fetch(`http://voyage-tenant-${acmeSlug()}:3000/api/meetings/${meetingId}/recordings/${recordingId}`, { headers: { Authorization: `Bearer ${acme()}` } });
+  assert.equal(r.status, 200);
+  assert.equal(Buffer.from(await r.arrayBuffer()).length, MP3.length);
+});
+await check('search and filters are applied by the database', async () => {
+  const found = await tenantApi(acmeSlug(), 'GET', '/meetings?q=Sharma&category=legal_intake', { token: acme() });
+  assert.ok(found.data.some((m) => m.id === meetingId));
+  assert.equal((await tenantApi(acmeSlug(), 'GET', '/meetings?q=zzzz-no-match', { token: acme() })).data.length, 0);
+  assert.equal((await tenantApi(acmeSlug(), 'GET', '/meetings?from=not-a-date', { token: acme() })).status, 400);
+});
+await check('deleting a meeting removes it and its recordings', async () => {
+  assert.equal((await tenantApi(acmeSlug(), 'DELETE', `/meetings/${meetingId}`, { token: acme() })).status, 204);
+  assert.equal((await tenantApi(acmeSlug(), 'GET', `/meetings/${meetingId}`, { token: acme() })).status, 404);
 });
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);

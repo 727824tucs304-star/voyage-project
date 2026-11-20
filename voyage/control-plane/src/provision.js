@@ -102,6 +102,7 @@ async function ensureContainer(t, version, { force = false } = {}) {
     `DATABASE_URL=postgres://${n.dbUser}:${dbPassword}@${config.tenantPgHost}:${config.tenantPgPort}/${n.dbName}`,
     `JWT_SECRET=${jwtSecret}`,
     `COMPANY_NAME=${t.company_name}`,
+    `STORAGE_DIR=${config.storageRoot}/${t.slug}`,
     `PORT=${config.tenantPort}`,
     'HOST=0.0.0.0',
   ];
@@ -124,6 +125,8 @@ async function ensureContainer(t, version, { force = false } = {}) {
       RestartPolicy: { Name: 'unless-stopped' },
       Memory: 512 * 1024 * 1024,
       PidsLimit: 256,
+      // Recordings and reports survive container replacement, updates and rollbacks.
+      Mounts: [{ Type: 'volume', Source: `vespera-files-${t.slug}`, Target: '/data' }],
     },
   });
   await docker.startContainer(n.container);

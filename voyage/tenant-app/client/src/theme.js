@@ -17,7 +17,7 @@ export const BUTTON_LABELS = {
   rose: 'Rose', amber: 'Amber', teal: 'Teal', slate: 'Slate',
 };
 
-export const DEFAULT_THEME = { app_name: 'CrewRoute', button_color: 'teal' };
+export const DEFAULT_THEME = { app_name: 'Vespera', button_color: 'violet' };
 
 export const ThemeContext = createContext({ theme: DEFAULT_THEME, setTheme: () => {} });
 export const useTheme = () => useContext(ThemeContext);

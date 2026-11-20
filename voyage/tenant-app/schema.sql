@@ -92,3 +92,37 @@ CREATE TABLE IF NOT EXISTS trip_details (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_trip_details_trip ON trip_details (trip_id, kind);
+CREATE TABLE IF NOT EXISTS meetings (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  category TEXT NOT NULL DEFAULT 'other'
+    CHECK (category IN ('legal_intake','internal_case','client_call','board','other')),
+  meeting_date DATE NOT NULL,
+  participants JSONB NOT NULL DEFAULT '[]'::jsonb,
+  status TEXT NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft','uploaded','queued','transcribing','analysing','completed','failed')),
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS recordings (
+  id SERIAL PRIMARY KEY,
+  meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  original_name TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  storage_key TEXT NOT NULL,
+  bytes BIGINT NOT NULL CHECK (bytes > 0),
+  duration_seconds NUMERIC(10,2),
+  uploaded_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS processing_jobs (
+  id SERIAL PRIMARY KEY,
+  meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  state TEXT NOT NULL CHECK (state IN ('queued','transcribing','analysing','completed','failed')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_meetings_date ON meetings (meeting_date);
+CREATE INDEX IF NOT EXISTS idx_jobs_meeting ON processing_jobs (meeting_id, state);

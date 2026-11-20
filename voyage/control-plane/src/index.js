@@ -111,7 +111,7 @@ async function main() {
   runBillingJobs.aws();
   setInterval(() => runBillingJobs.aws(), config.awsSyncIntervalMs);
   app.listen(config.port, '0.0.0.0', () => {
-    console.log(`Voyage control plane listening on :${config.port} (base domain ${config.baseDomain})`);
+    console.log(`Vespera control plane listening on :${config.port} (base domain ${config.baseDomain})`);
   });
 }
 

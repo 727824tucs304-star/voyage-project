@@ -317,7 +317,7 @@ export function LoginPage({ onLogin }) {
     <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
       <Card className="w-full max-w-sm p-6">
         <div className="mb-5 flex items-center gap-2 text-slate-900">
-          <span className="text-xl font-semibold">CrewRoute</span>
+          <span className="text-xl font-semibold">Vespera</span>
         </div>
         <h1 className="mb-4 text-lg font-medium">Sign in</h1>
         <form onSubmit={submit} className="space-y-4">

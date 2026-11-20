@@ -45,6 +45,8 @@ export const config = {
   repoRoot: process.env.REPO_ROOT || '/workspace',
   projectSubdir: process.env.PROJECT_SUBDIR || 'voyage',
   gitAskpass: process.env.GIT_ASKPASS || '',
+  // Per-client recording storage lives under this root. In production it is a Docker volume per client.
+  storageRoot: process.env.STORAGE_ROOT || '/data',
   // How often usage is sampled. One sample = one unit of running time.
   meterIntervalMs: Number(process.env.METER_INTERVAL_MS || 3600000),
   // AWS cost sync frequency. Cost Explorer data changes slowly, so syncing every few hours is enough.

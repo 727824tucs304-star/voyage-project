@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { exec } from './docker.js';
 
 export function tenantConf(host, containerName) {
-  return `# Managed by the Voyage control plane. Do not edit by hand.
+  return `# Managed by the Vespera control plane. Do not edit by hand.
 server {
     listen 80;
     server_name ${host};

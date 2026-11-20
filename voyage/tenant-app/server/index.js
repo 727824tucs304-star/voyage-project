@@ -49,7 +49,7 @@ async function start(attempt = 1) {
     return start(attempt + 1);
   }
   app.listen(port, host, () => {
-    console.log(`Voyage tenant ${process.env.APP_VERSION || ''} listening on ${host}:${port}`);
+    console.log(`Vespera tenant ${process.env.APP_VERSION || ''} listening on ${host}:${port}`);
   });
 }
 

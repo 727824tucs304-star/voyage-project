@@ -3,7 +3,7 @@ import { pool } from './db.js';
 import { HttpError, text, oneOf } from './validate.js';
 
 export const BUTTON_COLORS = ['blue', 'green', 'indigo', 'violet', 'rose', 'amber', 'teal', 'slate'];
-const DEFAULTS = { app_name: 'CrewRoute', button_color: 'teal' };
+const DEFAULTS = { app_name: 'Vespera', button_color: 'violet' };
 
 async function readTheme() {
   const { rows } = await pool.query('SELECT key, value FROM settings');

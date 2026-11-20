@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { pool } from './db.js';
 import { requireAuth, sign } from './auth.js';
 import { HttpError, text, number, integer, date, time, oneOf } from './validate.js';
+import { meetingsRouter } from './meetings.js';
 import { themePublic, themePrivate } from './theme.js';
 
 const TRIP_STATUSES = ['planned', 'ongoing', 'completed', 'cancelled'];
@@ -310,6 +311,7 @@ api.delete('/details/:id', wrap(async (req, res) => {
   res.status(204).end();
 }));
 
+api.use(meetingsRouter);
 api.use(themePrivate);
 
 api.use((req, res) => res.status(404).json({ error: 'Not found' }));

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>CrewRoute · Workspace Platform</title>
+<title>Vespera · Workspace Platform</title>
 <style>
   body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
   header { background: #0f1f3d; color: #fff; padding: 14px 24px; font-weight: 600; display: flex; justify-content: space-between; }
@@ -38,7 +38,7 @@
 </style>
 </head>
 <body>
-<header><span>CrewRoute · Workspace Platform</span><a href="#/admin">Admin</a></header>
+<header><span>Vespera · Workspace Platform</span><a href="#/admin">Admin</a></header>
 <main id="app"></main>
 <script>
 const app = document.getElementById('app');
@@ -61,7 +61,7 @@ const A = (m, u, b) => api(m, u, b, token());
 function shell(active, html) {
   app.innerHTML = `<div class="layout">
     <nav class="side">
-      <a href="#/admin" class="${active === 'tenants' ? 'on' : ''}">Tenants</a>
+      <a href="#/admin" class="${active === 'tenants' ? 'on' : ''}">Customers</a>
       <a href="#/admin/dev" class="${active === 'dev' ? 'on' : ''}">Deployment Manager</a>
       <a href="#/admin/billing" class="${active === 'billing' ? 'on' : ''}">Usage &amp; Billing</a>
     </nav>
@@ -71,11 +71,11 @@ function shell(active, html) {
 function register() {
   app.innerHTML = `
     <div class="card" style="max-width:520px">
-      <h2 style="margin-top:0">Create your workspace</h2>
-      <p class="muted">We provision a dedicated database, container and subdomain for your company. This usually takes about a minute.</p>
+      <h2 style="margin-top:0">Create your Vespera workspace</h2>
+      <p class="muted">Your organisation gets a private, isolated workspace for meeting recordings, transcripts and reports. Setup takes about a minute.</p>
       <form id="reg">
-        <label>Company name<input name="companyName" required minlength="2" maxlength="80"></label>
-        <label>Administrator name<input name="adminName" required minlength="2" maxlength="80"></label>
+        <label>Organisation name<input name="companyName" required minlength="2" maxlength="80"></label>
+        <label>Your name<input name="adminName" required minlength="2" maxlength="80"></label>
         <label>Email<input name="email" type="email" required maxlength="120"></label>
         <label>Password (min 8 characters)<input name="password" type="password" required minlength="8" maxlength="128"></label>
         <p id="msg" class="err"></p>
@@ -107,14 +107,14 @@ async function status(slug) {
     }
     const steps = Object.values((t.steps || []).reduce((acc, s) => ((acc[s.step] = s), acc), {}));
     const ready = t.status === 'ready';
-    const heading = ready ? 'Workspace Ready' : t.status === 'failed' ? 'Provisioning failed' : `Provisioning ${esc(t.companyName)}…`;
+    const heading = ready ? 'Your workspace is ready' : t.status === 'failed' ? 'Provisioning failed' : `Setting up ${esc(t.companyName)}…`;
     app.innerHTML = `
       <div class="card">
         <h2 style="margin-top:0">${heading}</h2>
         ${ready
           ? `<p>Your workspace is live:</p>
              <p style="font-size:18px"><a href="${esc(t.workspaceUrl)}" target="_blank" rel="noopener"><strong>${esc(t.workspaceUrl)}</strong></a></p>
-             <p class="muted">Sign in with the administrator email and password you registered with.</p>`
+             <p class="muted">Sign in with the email and password you registered with.</p>`
           : `<p class="muted">Status: ${esc(t.status)}${t.currentStep ? ' · ' + esc(t.currentStep) : ''}</p>`}
         ${t.status === 'failed' ? `<p class="err">${esc(t.errorMessage)}</p><button id="retry">Retry provisioning</button>` : ''}
         <table style="margin-top:12px">
@@ -170,12 +170,12 @@ async function admin() {
   shell('tenants', `
     <div class="card">
       <div class="bar" style="justify-content:space-between;margin-bottom:8px">
-        <h2 style="margin:0">Tenants (${tenants.length})</h2>
+        <h2 style="margin:0">Customers (${tenants.length})</h2>
         <span class="muted">Available images: ${versions.map(esc).join(', ') || 'none'}</span>
       </div>
       <p id="amsg" class="muted" style="margin:6px 0"></p>
       <div style="overflow-x:auto"><table>
-        <tr><th>Company</th><th>Domain</th><th>Database</th><th>Container</th><th>Version</th><th>Status</th><th>Actions</th></tr>
+        <tr><th>Customer</th><th>Domain</th><th>Database</th><th>Container</th><th>Version</th><th>Status</th><th>Actions</th></tr>
         ${rows.join('') || '<tr><td colspan="7" class="muted">No tenants yet.</td></tr>'}
       </table></div>
     </div>`);
