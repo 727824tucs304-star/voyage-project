@@ -6,19 +6,24 @@ import { config } from './config.js';
 import { db } from './db.js';
 import { listTenantVersions } from './docker.js';
 import { fetchBranch, exportTenantApp } from './git.js';
+import { imageRef, imageRepo } from './products.js';
 import { HttpError } from './errors.js';
 import { audit } from './audit.js';
 
 const oneLine = (s, max = 200) => String(s || '').split('\n')[0].replace(/[\x00-\x1f\x7f]/g, '').slice(0, max);
 
-export async function nextVersion() {
-  const [dockerVersions, { rows }] = await Promise.all([listTenantVersions(), db.query('SELECT version FROM builds')]);
+// Next release number for one product. Legacy Voyage numbers never count towards Vespera.
+export async function nextVersion(product = 'vespera') {
+  const [dockerVersions, { rows }] = await Promise.all([
+    listTenantVersions(imageRepo(product)),
+    db.query('SELECT version FROM builds WHERE product = $1', [product]),
+  ]);
   const used = [...dockerVersions, ...rows.map((r) => r.version)].map((v) => Number(v.slice(1)));
   return `v${Math.max(0, ...used) + 1}`;
 }
 
 // meta: { sha, message, date } from GitHub
-export async function startBuildForCommit(meta) {
+export async function startBuildForCommit(meta, product = 'vespera') {
   const { rows: running } = await db.query("SELECT id FROM builds WHERE status = 'running'");
   if (running.length) throw new HttpError(409, 'Another image build is already running');
   await fetchBranch();
@@ -30,19 +35,21 @@ export async function startBuildForCommit(meta) {
     await fs.rm(dir, { recursive: true, force: true });
     throw err;
   }
-  const version = await nextVersion();
+  const version = await nextVersion(product);
   const { rows } = await db.query(
-    `INSERT INTO builds (version, commit_hash, commit_message, commit_date, status)
-     VALUES ($1, $2, $3, $4, 'running') RETURNING id`,
-    [version, meta.sha, oneLine(meta.message), meta.date || '']
+    `INSERT INTO builds (product, version, commit_hash, commit_message, commit_date, status)
+     VALUES ($1, $2, $3, $4, $5, 'running') RETURNING id`,
+    [product, version, meta.sha, oneLine(meta.message), meta.date || '']
   );
-  runBuild(rows[0].id, version, meta.sha, context, dir);
-  return { id: rows[0].id, version, commit: meta.sha };
+  runBuild(rows[0].id, version, meta.sha, context, dir, product);
+  return { id: rows[0].id, version, commit: meta.sha, product };
 }
 
-function runBuild(id, version, commit, context, dir) {
-  const image = `${config.tenantImageRepo}:${version}`;
-  const args = ['build', '--label', `voyage.commit=${commit}`, '--build-arg', `APP_VERSION=${version}`, '-t', image, context];
+function runBuild(id, version, commit, context, dir, product) {
+  const args = [
+    'build', '--label', `voyage.commit=${commit}`, '--label', `voyage.product=${product}`,
+    '--build-arg', `APP_VERSION=${version}`, '-t', imageRef(product, version), context,
+  ];
   let log = '';
   const keep = (chunk) => { log = (log + chunk).slice(-6000); };
   const finish = (ok, extra = '') =>
@@ -59,7 +66,7 @@ function runBuild(id, version, commit, context, dir) {
     await cleanup();
     finish(code === 0, code === 0 ? '' : `\nexit code ${code}`);
   });
-  audit('build.start', { id, version, commit });
+  audit('build.start', { id, product, version, commit });
 }
 
 export async function waitForBuild(id) {
@@ -72,22 +79,22 @@ export async function waitForBuild(id) {
   }
 }
 
-export async function buildFor(version) {
-  const { rows } = await db.query("SELECT * FROM builds WHERE version = $1 AND status = 'succeeded'", [version]);
+export async function buildFor(version, product = 'vespera') {
+  const { rows } = await db.query(
+    "SELECT * FROM builds WHERE product = $1 AND version = $2 AND status = 'succeeded'", [product, version]);
   return rows[0] || null;
 }
 
 // Release note values passed into a tenant container at creation.
-export async function releaseInfo(version) {
-  const b = await buildFor(version);
+export async function releaseInfo(version, product = 'vespera') {
+  const b = await buildFor(version, product);
   return { commit: b?.commit_hash || '', message: oneLine(b?.commit_message), date: b?.commit_date || '' };
 }
 
-export async function listBuilds() {
+export async function listBuilds(product = 'vespera') {
   const { rows } = await db.query(
-    `SELECT id, version, commit_hash, commit_message, status, created_at, finished_at, right(log, 1500) AS log_tail
-     FROM builds ORDER BY id DESC LIMIT 20`
-  );
+    `SELECT id, product, version, commit_hash, commit_message, status, created_at, finished_at, right(log, 1500) AS log_tail
+     FROM builds WHERE product = $1 ORDER BY id DESC LIMIT 20`, [product]);
   return rows;
 }
 

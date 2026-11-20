@@ -85,3 +85,8 @@ CREATE TABLE IF NOT EXISTS billing_summaries (
   computed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (slug, month)
 );
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS product TEXT NOT NULL DEFAULT 'voyage';
+ALTER TABLE builds ADD COLUMN IF NOT EXISTS product TEXT NOT NULL DEFAULT 'voyage';
+ALTER TABLE builds DROP CONSTRAINT IF EXISTS builds_version_key;
+CREATE UNIQUE INDEX IF NOT EXISTS builds_product_version_key ON builds (product, version);
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS product TEXT NOT NULL DEFAULT 'voyage';

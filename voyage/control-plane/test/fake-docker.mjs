@@ -20,7 +20,7 @@ export function startFakeDocker({ socketPath, tenantEntry, nginxMain, logDir, im
   const containers = new Map();
   const execs = new Map();
   const ips = new Map();
-  const images = new Set(['voyage-tenant:v1', 'voyage-tenant:v2']);
+  const images = new Set(['voyage-tenant:v1', 'voyage-tenant:v2', 'vespera-tenant:v1']);
   const extra = () => (fs.existsSync(imageFile) ? fs.readFileSync(imageFile, 'utf8').split('\n').filter(Boolean) : []);
   const hasImage = (t) => images.has(t) || extra().includes(t);
   const allImages = () => [...new Set([...images, ...extra()])];

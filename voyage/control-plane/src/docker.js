@@ -43,9 +43,9 @@ export async function imageExists(image) {
   return (await request('GET', `/images/${encodeURIComponent(image)}/json`)).status === 200;
 }
 
-export async function listTenantVersions() {
+export async function listTenantVersions(repo = config.tenantImageRepo) {
   const r = await request('GET', '/images/json');
-  const prefix = `${config.tenantImageRepo}:`;
+  const prefix = `${repo}:`;
   return (r.data || [])
     .flatMap((img) => img.RepoTags || [])
     .filter((tag) => tag.startsWith(prefix))

@@ -99,6 +99,7 @@ const control = spawn(process.execPath, ['src/index.js'], {
     GITHUB_API_URL: `http://127.0.0.1:${GH_PORT}`,
     METER_INTERVAL_MS: '3000',
     STORAGE_ROOT: path.join(WORK, 'files'),
+    TENANT_DEFAULT_PRODUCT: 'voyage',
     AWS_CLI_BIN: path.join(CONTROL_DIR, 'test', 'fake-aws.sh'),
     AWS_MODE_FILE: path.join(WORK, 'aws-mode'),
   },
@@ -437,7 +438,7 @@ await check('deploying an unknown image is refused (422) and an invalid version 
   assert.equal(invalid.status, 400);
 });
 await check('the admin page lists available versions', async () => {
-  const r = await ctl('GET', '/api/admin/versions', adminOpts);
+  const r = await ctl('GET', '/api/admin/versions?product=voyage', adminOpts);
   assert.deepEqual(r.data.versions, ['v1', 'v2']);
 });
 await check('Client A (Acme) is upgraded to v2: container replaced, database preserved', async () => {
@@ -521,6 +522,17 @@ const sameOthers = async (before) => {
 };
 let commit1 = null, commit2 = null, v3 = null, v4 = null;
 
+await check('Client A moves to Vespera V1 before the GitHub workflow runs (data kept)', async () => {
+  const trips = (await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length;
+  const r = await ctl('POST', `/api/admin/tenants/${acmeSlug()}/migrate-to-vespera`, { ...adminOpts, body: { version: 'v1' } });
+  assert.equal(r.status, 202, JSON.stringify(r.data));
+  await waitFor(async () => {
+    const row = await adminRow(acmeSlug());
+    if (row.status === 'failed') throw new Error(`migration failed: ${row.errorMessage}`);
+    return row.status === 'ready' && row.product === 'vespera' && row.version === 'v1';
+  }, 'acme on Vespera V1', 180000);
+  assert.equal((await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length, trips);
+});
 await check('VS Code change: a developer commits and pushes to GitHub', async () => {
   execFileSync('bash', ['-c', `git clone -q "${REMOTE}" "${DEV}" && cd "${DEV}" && git config user.name "Dev Person" && git config user.email dev@example.test`]);
   fs.appendFileSync(path.join(DEV, PAGES_REL), '\n// dev-change-1\n');
@@ -831,6 +843,40 @@ await check('search and filters are applied by the database', async () => {
 await check('deleting a meeting removes it and its recordings', async () => {
   assert.equal((await tenantApi(acmeSlug(), 'DELETE', `/meetings/${meetingId}`, { token: acme() })).status, 204);
   assert.equal((await tenantApi(acmeSlug(), 'GET', `/meetings/${meetingId}`, { token: acme() })).status, 404);
+});
+
+console.log('\n[12] Vespera product line: V1 baseline and migration');
+await check('the Vespera release line starts at V1, separate from legacy Voyage numbering', async () => {
+  const v = await ctl('GET', '/api/admin/versions?product=vespera', adminOpts);
+  assert.equal(v.status, 200);
+  assert.deepEqual(v.data.versions, ['v1', v3, v4]);
+  assert.equal(v.data.next, `v${Number(v4.slice(1)) + 1}`);
+});
+await check('a legacy Voyage workspace cannot take Vespera builds until it is migrated', async () => {
+  const cedar = slugs['Cedar Trips'];
+  const r = await ctl('POST', '/api/admin/releases', { ...adminOpts, body: { slug: cedar, sha: commit2 } });
+  assert.equal(r.status, 409, JSON.stringify(r.data));
+});
+await check('migrating a client to Vespera V1 keeps its data and leaves other clients untouched', async () => {
+  const cedar = slugs['Cedar Trips'];
+  const trips = (await tenantApi(cedar, 'GET', '/trips', { token: tokens['Cedar Trips'] })).data.length;
+  const others = await snapshot(otherSlugs().filter((s) => s !== cedar));
+  const pidBefore = (await dockerApi('GET', `/containers/voyage-tenant-${cedar}/json`)).data.State.Pid;
+  const r = await ctl('POST', `/api/admin/tenants/${cedar}/migrate-to-vespera`, { ...adminOpts, body: { version: 'v1' } });
+  assert.equal(r.status, 202, JSON.stringify(r.data));
+  await waitFor(async () => {
+    const row = await adminRow(cedar);
+    if (row.status === 'failed') throw new Error(`migration failed: ${row.errorMessage}`);
+    return row.status === 'ready' && row.product === 'vespera';
+  }, 'cedar migrated', 180000);
+  assert.equal((await tenantApi(cedar, 'GET', '/health')).data.version, 'v1');
+  assert.notEqual((await dockerApi('GET', `/containers/voyage-tenant-${cedar}/json`)).data.State.Pid, pidBefore);
+  assert.equal((await tenantApi(cedar, 'GET', '/trips', { token: tokens['Cedar Trips'] })).data.length, trips);
+  for (const s of Object.keys(others)) {
+    const now = await snapshot([s]);
+    assert.equal(now[s].pid, others[s].pid, `${s} restarted`);
+    assert.equal(now[s].version, others[s].version, `${s} changed`);
+  }
 });
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);

@@ -31,6 +31,9 @@ export const config = {
   dockerNetwork: process.env.DOCKER_NETWORK || 'voyage-net',
   dockerBin: process.env.DOCKER_BIN || 'docker',
   tenantImageRepo: process.env.TENANT_IMAGE_REPO || 'voyage-tenant',
+  vesperaImageRepo: process.env.VESPERA_IMAGE_REPO || 'vespera-tenant',
+  // New workspaces are created on this product. Vespera is the official product.
+  tenantDefaultProduct: process.env.TENANT_DEFAULT_PRODUCT || 'vespera',
   tenantDefaultVersion: process.env.TENANT_DEFAULT_VERSION || 'v1',
   tenantPort: 3000,
   nginxContainer: process.env.NGINX_CONTAINER || 'voyage-nginx',

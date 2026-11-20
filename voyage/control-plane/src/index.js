@@ -8,7 +8,7 @@ import { HttpError } from './errors.js';
 import { EMAIL_RE, SLUG_RE, safeEqual } from './security.js';
 import { releaseRouter } from './admin-release.js';
 import { deployRecorded } from './deploy-history.js';
-import { resumeBuilds } from './builds.js';
+import { resumeBuilds, nextVersion } from './builds.js';
 import { billingRouter, runBillingJobs } from './admin-billing.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -68,7 +68,8 @@ app.post('/api/tenants/:slug/retry', wrap(async (req, res) => {
 
 // ---- Administration (admin token required) ----
 app.get('/api/admin/versions', requireAdmin, wrap(async (req, res) => {
-  res.json({ versions: await P.listVersions() });
+  const product = req.query.product === 'voyage' ? 'voyage' : 'vespera';
+  res.json({ product, versions: await P.listVersions(product), next: await nextVersion(product) });
 }));
 
 app.get('/api/admin/tenants', requireAdmin, wrap(async (req, res) => {

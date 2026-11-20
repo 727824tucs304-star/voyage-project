@@ -7,6 +7,7 @@ import { applyTenantConf, tenantConf } from './nginx.js';
 import { HttpError } from './errors.js';
 import { tenantSecrets, baseSlug, randomSuffix, SLUG_RE, VERSION_RE } from './security.js';
 import { releaseInfo } from './builds.js';
+import { imageRef, imageRepo } from './products.js';
 
 const busy = new Set();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -19,7 +20,6 @@ export function names(slug) {
     host: `${slug}.${config.baseDomain}`,
   };
 }
-const imageFor = (version) => `${config.tenantImageRepo}:${version}`;
 
 export async function getTenant(slug) {
   const { rows } = await db.query('SELECT * FROM tenants WHERE slug = $1', [slug]);
@@ -86,9 +86,9 @@ async function ensureDatabase(slug) {
   return `${dbName} ready for ${dbUser}`;
 }
 
-async function ensureContainer(t, version, { force = false } = {}) {
+async function ensureContainer(t, version, { force = false, product = t.product } = {}) {
   const n = names(t.slug);
-  const image = imageFor(version);
+  const image = imageRef(product, version);
   const current = await docker.inspectContainer(n.container);
 
   // Idempotent: a retry reuses a healthy container on the right image instead of recreating it.
@@ -111,7 +111,7 @@ async function ensureContainer(t, version, { force = false } = {}) {
     env.push(`ADMIN_NAME=${t.admin_name}`, `ADMIN_EMAIL=${t.admin_email}`, `ADMIN_PASSWORD_HASH=${t.admin_password_hash}`);
   }
 
-  const rel = await releaseInfo(version);
+  const rel = await releaseInfo(version, product);
   env.push(`RELEASE_VERSION=${version}`, `RELEASE_COMMIT=${rel.commit}`, `RELEASE_MESSAGE=${rel.message}`, `RELEASE_DATE=${rel.date}`);
 
   // The container is disposable: all state lives in the tenant's database.
@@ -119,7 +119,7 @@ async function ensureContainer(t, version, { force = false } = {}) {
   await docker.createContainer(n.container, {
     Image: image,
     Env: env,
-    Labels: { 'voyage.role': 'tenant', 'voyage.tenant': t.slug, 'voyage.version': version },
+    Labels: { 'voyage.role': 'tenant', 'voyage.tenant': t.slug, 'voyage.version': version, 'voyage.product': product },
     HostConfig: {
       NetworkMode: config.dockerNetwork,
       RestartPolicy: { Name: 'unless-stopped' },
@@ -165,10 +165,10 @@ async function runProvisioning(slug) {
     await setStatus(slug, 'provisioning');
     await runStep(slug, 'create_database', () => ensureDatabase(slug));
     await runStep(slug, 'verify_image', async () => {
-      if (!(await docker.imageExists(imageFor(t.version)))) {
-        throw new Error(`image ${imageFor(t.version)} is not built on this host`);
+      if (!(await docker.imageExists(imageRef(t.product, t.version)))) {
+        throw new Error(`image ${imageRef(t.product, t.version)} is not built on this host`);
       }
-      return imageFor(t.version);
+      return imageRef(t.product, t.version);
     });
     await runStep(slug, 'ensure_network', () => docker.ensureNetwork());
     await runStep(slug, 'start_container', () => ensureContainer(t, t.version));
@@ -214,9 +214,9 @@ export async function registerTenant({ companyName, adminName, email, password }
     try {
       const { rows } = await db.query(
         `INSERT INTO tenants (slug, company_name, admin_name, admin_email, admin_password_hash,
-           domain, db_name, db_user, container_name, version, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'provisioning') RETURNING *`,
-        [slug, companyName, adminName, email, passwordHash, n.host, n.dbName, n.dbUser, n.container, config.tenantDefaultVersion]
+           domain, db_name, db_user, container_name, version, product, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'provisioning') RETURNING *`,
+        [slug, companyName, adminName, email, passwordHash, n.host, n.dbName, n.dbUser, n.container, config.tenantDefaultVersion, config.tenantDefaultProduct]
       );
       return { tenant: rows[0], created: true };
     } catch (err) {
@@ -242,26 +242,27 @@ export async function retryProvisioning(slug) {
   return { accepted: true, slug };
 }
 
-export async function deployVersion(slug, version) {
+export async function deployVersion(slug, version, { product } = {}) {
   if (!VERSION_RE.test(version)) throw new HttpError(400, 'version must look like v1, v2, ...');
   const t = await getTenant(slug);
   if (!t) throw new HttpError(404, 'Workspace not found');
   if (t.status !== 'ready') throw new HttpError(409, `Workspace is ${t.status}; wait until it is ready`);
-  if (t.version === version) throw new HttpError(409, `Workspace already runs ${version}`);
-  if (!(await docker.imageExists(imageFor(version)))) {
-    throw new HttpError(422, `Image ${imageFor(version)} is not available on this host`);
+  const target = product || t.product;
+  if (t.version === version && target === t.product) throw new HttpError(409, `Workspace already runs ${version}`);
+  if (!(await docker.imageExists(imageRef(target, version)))) {
+    throw new HttpError(422, `Image ${imageRef(target, version)} is not available on this host`);
   }
 
   const previous = t.version;
   const started = launch(slug, async () => {
     await db.query("UPDATE tenants SET status = 'updating', error_message = NULL, updated_at = now() WHERE slug = $1", [slug]);
     try {
-      await runStep(slug, `deploy_${version}`, () => ensureContainer(t, version, { force: true }));
+      await runStep(slug, `deploy_${version}`, () => ensureContainer(t, version, { force: true, product: target }));
       await runStep(slug, 'health_check', () => waitHealthy(slug, version));
       await db.query(
-        `UPDATE tenants SET status = 'ready', version = $2, previous_version = $3, current_step = 'ready',
+        `UPDATE tenants SET status = 'ready', version = $2, previous_version = $3, product = $4, current_step = 'ready',
            updated_at = now() WHERE slug = $1`,
-        [slug, version, previous]
+        [slug, version, target === t.product ? previous : null, target]
       );
     } catch (err) {
       // Automatic rollback: restore the previous image so the workspace stays available.
@@ -298,8 +299,8 @@ export async function resumeInterrupted() {
   for (const r of rows) startProvisioning(r.slug);
 }
 
-export function listVersions() {
-  return docker.listTenantVersions();
+export function listVersions(product = 'vespera') {
+  return docker.listTenantVersions(imageRepo(product));
 }
 
 // Public view: no secrets, no hashes. Error text is shown only for failed workspaces.
@@ -322,6 +323,7 @@ export function adminView(t) {
     slug: t.slug,
     companyName: t.company_name,
     adminEmail: t.admin_email,
+    product: t.product,
     domain: t.domain,
     databaseName: t.db_name,
     containerName: t.container_name,

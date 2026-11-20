@@ -142,220 +142,58 @@ function adminLogin() {
 
 async function admin() {
   if (!token()) return adminLogin();
-  let tenants, versions;
+  let tenants, releases;
   try {
-    [tenants, versions] = await Promise.all([A('GET', '/api/admin/tenants'), A('GET', '/api/admin/versions').then((r) => r.versions)]);
+    [tenants, releases] = await Promise.all([A('GET', '/api/admin/tenants'), A('GET', '/api/admin/versions?product=vespera')]);
   } catch (err) {
     sessionStorage.removeItem(TOKEN_KEY);
     return adminLogin();
   }
+  const label = (v) => String(v || '').toUpperCase();
   const rows = tenants.map((t) => {
-    const choices = versions.filter((v) => v !== t.version);
+    const legacy = t.product !== 'vespera';
+    const choices = releases.versions.filter((v) => v !== t.version);
+    const badge = legacy
+      ? '<span class="badge" style="background:#fee2e2">Voyage (legacy)</span>'
+      : '<span class="badge" style="background:#ede9fe">Vespera</span>';
+    let actions = '';
+    if (t.status === 'ready' && legacy) {
+      actions = `<button data-action="migrate" data-slug="${esc(t.slug)}">Migrate to Vespera V1</button>`;
+    } else if (t.status === 'ready') {
+      actions = `<div class="bar">
+        <select data-select="${esc(t.slug)}" style="width:auto" ${choices.length ? '' : 'disabled'}>${choices.map((v) => `<option value="${esc(v)}">${esc(label(v))}</option>`).join('') || '<option>no other releases</option>'}</select>
+        <button data-action="deploy" data-slug="${esc(t.slug)}" ${choices.length ? '' : 'disabled'}>Deploy</button>
+        ${t.previousVersion ? `<button class="ghost" data-action="rollback" data-slug="${esc(t.slug)}">Rollback</button>` : ''}
+      </div>`;
+    }
+    if (t.status === 'failed') actions += ` <button class="ghost" data-action="retry" data-slug="${esc(t.slug)}">Retry</button>`;
     return `<tr>
       <td><strong>${esc(t.companyName)}</strong><div class="muted">${esc(t.adminEmail)}</div></td>
       <td><a href="http://${esc(t.domain)}" target="_blank" rel="noopener">${esc(t.domain)}</a></td>
       <td>${esc(t.databaseName)}</td>
       <td>${esc(t.containerName)}</td>
-      <td><span class="badge">${esc(t.version)}</span>${t.previousVersion ? `<div class="muted">previous ${esc(t.previousVersion)}</div>` : ''}</td>
+      <td>${badge}<div><span class="badge">${esc(label(t.version))}</span></div></td>
       <td>${esc(t.status)}${t.currentStep ? `<div class="muted">${esc(t.currentStep)}</div>` : ''}${t.errorMessage ? `<div class="err" style="font-size:12px">${esc(t.errorMessage)}</div>` : ''}</td>
-      <td>
-        ${t.status === 'ready' ? `<div class="bar">
-          <select data-select="${esc(t.slug)}" ${choices.length ? '' : 'disabled'} style="width:auto">${choices.map((v) => `<option>${esc(v)}</option>`).join('') || '<option>no other versions</option>'}</select>
-          <button data-action="deploy" data-slug="${esc(t.slug)}" ${choices.length ? '' : 'disabled'}>Deploy</button>
-          ${t.previousVersion ? `<button class="ghost" data-action="rollback" data-slug="${esc(t.slug)}">Rollback</button>` : ''}
-        </div>` : ''}
-        ${t.status === 'failed' ? `<button class="ghost" data-action="retry" data-slug="${esc(t.slug)}">Retry</button>` : ''}
-      </td></tr>`;
+      <td>${actions}</td>
+    </tr>`;
   });
   shell('tenants', `
     <div class="card">
       <div class="bar" style="justify-content:space-between;margin-bottom:8px">
         <h2 style="margin:0">Customers (${tenants.length})</h2>
-        <span class="muted">Available images: ${versions.map(esc).join(', ') || 'none'}</span>
+        <span class="muted">Vespera releases: ${releases.versions.map(label).join(', ') || 'none yet'} · next: ${esc(label(releases.next))}</span>
+      </div>
+      <div class="bar" style="margin-bottom:10px">
+        <button data-action="build-release">Build next Vespera release from latest commit</button>
       </div>
       <p id="amsg" class="muted" style="margin:6px 0"></p>
       <div style="overflow-x:auto"><table>
-        <tr><th>Customer</th><th>Domain</th><th>Database</th><th>Container</th><th>Version</th><th>Status</th><th>Actions</th></tr>
-        ${rows.join('') || '<tr><td colspan="7" class="muted">No tenants yet.</td></tr>'}
+        <tr><th>Customer</th><th>Domain</th><th>Database</th><th>Container</th><th>Product · release</th><th>Status</th><th>Actions</th></tr>
+        ${rows.join('') || '<tr><td colspan="7" class="muted">No customers yet.</td></tr>'}
       </table></div>
+      <p class="muted" style="font-size:13px">Legacy Voyage workspaces keep running their current release until you migrate them one at a time. Nothing changes automatically.</p>
     </div>`);
   if (tenants.some((t) => t.status === 'provisioning' || t.status === 'updating')) timer = setTimeout(admin, 3000);
-}
-
-const CHANGE = { added: ['added', '#059669'], modified: ['modified', '#2563eb'], deleted: ['deleted', '#dc2626'], renamed: ['renamed', '#7c3aed'] };
-let currentSlug = null, lastSeenSha = null, devTimer = null, relPoll = null;
-const short = (s) => (s || '').slice(0, 7);
-const when = (d) => (d ? new Date(d).toLocaleString() : '—');
-
-function say(text, bad) {
-  const m = document.getElementById('dmsg');
-  if (!m) return;
-  m.textContent = text;
-  m.className = bad ? 'err' : 'muted';
-}
-
-function fileTable(files) {
-  return `<table>${files.map((f) => {
-    const [label, color] = CHANGE[f.status] || [f.status, '#64748b'];
-    return `<tr><td style="width:90px"><span class="badge" style="background:${color};color:#fff">${esc(label)}</span></td><td><code>${esc(f.path)}</code></td></tr>`;
-  }).join('')}</table>`;
-}
-
-function describeStatus(s) {
-  const d = s.latestDeployment, b = s.latestBuild;
-  if (s.deploying && b && b.status === 'running') {
-    return `<p class="muted">Building image ${esc(b.version)} from commit ${esc(short(b.commit_hash))}…</p>`;
-  }
-  if (d && d.status === 'running') {
-    return `<p class="muted">Deploying ${esc(d.to_version)} to this client. Waiting for the new container to pass its health check…</p>`;
-  }
-  if (d && d.status === 'succeeded') return `<p class="ok">Deployed ${esc(d.to_version)}. Health check passed.</p>`;
-  if (d && d.status === 'rolled_back') return `<p class="err">Update failed and was rolled back: ${esc(d.detail || '')}</p>`;
-  if (d && d.status === 'failed') {
-    const log = d.detail && d.detail.includes('build') && b && b.status === 'failed' ? `<pre>${esc(b.log_tail)}</pre>` : '';
-    return `<p class="err">Deployment failed: ${esc(d.detail || 'unknown error')}</p>${log}`;
-  }
-  return '';
-}
-
-async function devManager() {
-  if (!token()) return adminLogin();
-  clearInterval(devTimer); clearInterval(relPoll);
-  shell('dev', '<p class="muted">Loading…</p>');
-  let tenants;
-  try {
-    tenants = await A('GET', '/api/admin/tenants');
-  } catch (e) {
-    return shell('dev', `<div class="card err">${esc(e.message)}</div>`);
-  }
-  if (!tenants.length) return shell('dev', '<div class="card"><p>No clients yet. Register one first.</p></div>');
-  if (!tenants.some((t) => t.slug === currentSlug)) currentSlug = tenants[0].slug;
-  shell('dev', `
-    <div class="card bar">
-      <h2 style="margin:0;flex:1">Deployment Manager</h2>
-      <label style="margin:0">Target client&nbsp;
-        <select id="tsel" style="width:auto">${tenants.map((t) =>
-          `<option value="${esc(t.slug)}" ${t.slug === currentSlug ? 'selected' : ''}>${esc(t.companyName)}</option>`).join('')}</select>
-      </label>
-    </div>
-    <div class="grid2">
-      <div class="card" id="pDeployed"><p class="muted">Loading…</p></div>
-      <div class="card" id="pLatest"><p class="muted">Loading…</p></div>
-    </div>
-    <div class="card" id="pChanges"><p class="muted">Loading…</p></div>
-    <div class="card">
-      <div class="bar">
-        <select id="csel" style="flex:1"></select>
-        <button id="deployBtn" class="deploy">DEPLOY CHANGES</button>
-      </div>
-      <p class="muted" style="font-size:13px">Developers push from VS Code. This page reads GitHub every minute and shows what this client has not received yet.</p>
-      <p id="dmsg" class="muted"></p>
-      <div id="pStatus"></div>
-    </div>
-    <div class="card"><h2 style="margin-top:0">Deployment history</h2><div id="pHistory"></div></div>`);
-  document.getElementById('tsel').onchange = (e) => { currentSlug = e.target.value; devManager(); };
-  document.getElementById('deployBtn').onclick = deployChanges;
-  await refreshDev(true);
-  devTimer = setInterval(() => refreshDev(false), 60000);
-}
-
-async function refreshDev(first) {
-  const slug = currentSlug;
-  const q = encodeURIComponent(slug);
-  let data;
-  try {
-    data = await Promise.all([
-      A('GET', '/api/admin/tenants'),
-      A('GET', `/api/admin/github/changes?slug=${q}`),
-      A('GET', '/api/admin/github/commits'),
-      A('GET', `/api/admin/releases/history?slug=${q}`),
-      A('GET', `/api/admin/releases/status?slug=${q}`),
-    ]);
-  } catch (e) {
-    return say(e.message, true);
-  }
-  if (currentSlug !== slug || !document.getElementById('pDeployed')) return;
-  const [tenants, changes, commits, hist, status] = data;
-  const t = tenants.find((x) => x.slug === slug);
-  const latest = changes.latest;
-  const newCommit = !first && lastSeenSha && latest && latest.sha !== lastSeenSha;
-  if (newCommit) say(`New commit pushed to GitHub: ${latest.message}`);
-  lastSeenSha = latest?.sha || lastSeenSha;
-  const lastDeployed = hist.find((h) => h.status === 'succeeded');
-  const lastAttempt = hist[0];
-
-  document.getElementById('pDeployed').innerHTML = `
-    <h3 style="margin-top:0">Deployed on this client</h3>
-    <p>Version: <span class="badge" style="background:#e2e8f0">${esc(t.version)}</span></p>
-    <p>Commit: ${changes.baseline ? `<code>${esc(short(changes.baseline))}</code> ${esc(lastDeployed?.commit_message || '')}`
-      : '<span class="muted">not tracked yet (deploy a commit to start tracking)</span>'}</p>
-    <p>Last deployment: ${lastAttempt ? `${esc(when(lastAttempt.created_at))} · <span class="${lastAttempt.status === 'succeeded' ? 'ok' : lastAttempt.status === 'running' ? 'muted' : 'err'}">${esc(lastAttempt.status)}</span>` : '<span class="muted">none yet</span>'}</p>`;
-
-  document.getElementById('pLatest').innerHTML = latest ? `
-    <h3 style="margin-top:0">Latest commit on GitHub ${newCommit ? '<span class="badge" style="background:#fde68a">new</span>' : ''}</h3>
-    <p><code>${esc(latest.short)}</code> ${esc(latest.message)}</p>
-    <p class="muted">by ${esc(latest.author)} · ${esc(when(latest.date))}</p>` : '<p class="muted">No commits found on GitHub.</p>';
-
-  let pending;
-  if (changes.baseline === null) {
-    pending = `<h3 style="margin-top:0">Files in the latest commit</h3>
-      <p class="muted">Nothing is recorded as deployed to this client yet, so every file counts as new.</p>${fileTable(changes.latestFiles || [])}`;
-  } else if (changes.upToDate) {
-    pending = `<h3 style="margin-top:0">Changes not yet deployed</h3><p class="ok">Nothing to deploy: this client already runs the latest commit.</p>`;
-  } else {
-    pending = `<h3 style="margin-top:0">Changes not yet deployed</h3>${changes.files.length
-      ? fileTable(changes.files) : '<p class="muted">No file changes since the deployed commit.</p>'}`;
-  }
-  document.getElementById('pChanges').innerHTML = pending;
-
-  const csel = document.getElementById('csel');
-  const keep = csel.value;
-  csel.innerHTML = commits.map((c) => `<option value="${esc(c.sha)}">${esc(c.short)} · ${esc(c.message)}</option>`).join('');
-  if (keep && commits.some((c) => c.sha === keep)) csel.value = keep;
-
-  const busy = status.deploying || (status.latestDeployment && status.latestDeployment.status === 'running');
-  document.getElementById('deployBtn').disabled = !!busy || (changes.baseline !== null && changes.upToDate);
-  document.getElementById('pStatus').innerHTML = describeStatus(status);
-
-  document.getElementById('pHistory').innerHTML = `<table>
-    <tr><th>When</th><th>Action</th><th>From → To</th><th>Commit</th><th>Message</th><th>Result</th><th></th></tr>
-    ${hist.map((h) => `<tr>
-      <td class="muted">${esc(when(h.created_at))}</td>
-      <td>${esc(h.kind)}</td>
-      <td>${esc(h.from_version || '—')} → ${esc(h.to_version)}</td>
-      <td><code>${esc(short(h.commit_hash))}</code></td>
-      <td>${esc(h.commit_message || '')}</td>
-      <td class="${h.status === 'succeeded' ? 'ok' : h.status === 'running' ? 'muted' : 'err'}">${esc(h.status)}${h.detail ? `<div class="muted" style="font-size:12px">${esc(h.detail)}</div>` : ''}</td>
-      <td>${h.status === 'succeeded' && h.to_version !== t.version
-        ? `<button class="ghost" data-rollback="${esc(h.to_version)}">Roll back</button>` : ''}</td>
-    </tr>`).join('') || '<tr><td colspan="7" class="muted">No deployments yet.</td></tr>'}
-  </table>`;
-  document.querySelectorAll('[data-rollback]').forEach((btn) => {
-    btn.onclick = async () => {
-      if (!confirm(`Roll ${currentSlug} back to ${btn.dataset.rollback}? Its data is kept.`)) return;
-      try {
-        await A('POST', '/api/admin/releases/rollback', { slug: currentSlug, version: btn.dataset.rollback });
-        say(`Rolling back to ${btn.dataset.rollback}…`);
-        refreshDev(false);
-      } catch (e) { say(e.message, true); }
-    };
-  });
-
-  clearInterval(relPoll);
-  if (busy) relPoll = setInterval(() => refreshDev(false), 2500);
-}
-
-async function deployChanges() {
-  const sha = document.getElementById('csel').value;
-  if (!sha) return say('Choose a commit first.', true);
-  if (!confirm(`Deploy commit ${short(sha)} to this client? Only this client's container is replaced. Its data is kept.`)) return;
-  try {
-    await A('POST', '/api/admin/releases', { slug: currentSlug, sha });
-    say('Deployment started. Status updates below as each step completes.');
-    refreshDev(false);
-  } catch (e) {
-    say(e.message, true);
-  }
 }
 
 let billState = { month: new Date().toISOString().slice(0, 7), slug: '' };
@@ -489,6 +327,13 @@ app.addEventListener('click', async (e) => {
     } else if (btn.dataset.action === 'rollback') {
       await A('POST', `/api/admin/tenants/${encodeURIComponent(slug)}/rollback`);
       msg.textContent = `Rolling ${slug} back to its previous version.`;
+    } else if (btn.dataset.action === 'migrate') {
+      await A('POST', `/api/admin/tenants/${encodeURIComponent(slug)}/migrate-to-vespera`, { version: 'v1' });
+      msg.textContent = `Migrating ${slug} to Vespera V1. Its data, domain and files are kept.`;
+    } else if (btn.dataset.action === 'build-release') {
+      const commits = await A('GET', '/api/admin/github/commits');
+      const r = await A('POST', '/api/admin/products/vespera/build', { sha: commits[0].sha });
+      msg.textContent = `Building Vespera ${label(r.version)} from commit ${commits[0].short}. This takes a few minutes.`;
     } else if (btn.dataset.action === 'retry') {
       await api('POST', `/api/tenants/${encodeURIComponent(slug)}/retry`);
       msg.textContent = `Retrying provisioning for ${slug}.`;
