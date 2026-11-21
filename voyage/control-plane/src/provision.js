@@ -111,6 +111,10 @@ async function ensureContainer(t, version, { force = false, product = t.product 
   if (process.env.TRANSCRIBE_BUCKET) env.push(`TRANSCRIBE_BUCKET=${process.env.TRANSCRIBE_BUCKET}`);
   if (process.env.TRANSCRIPTION_MOCK_DELAY_MS) env.push(`TRANSCRIPTION_MOCK_DELAY_MS=${process.env.TRANSCRIPTION_MOCK_DELAY_MS}`);
 
+  if (process.env.GEMINI_API_KEY) env.push(`GEMINI_API_KEY=${process.env.GEMINI_API_KEY}`);
+  if (process.env.GEMINI_MODEL) env.push(`GEMINI_MODEL=${process.env.GEMINI_MODEL}`);
+  if (process.env.AI_PROVIDER) env.push(`AI_PROVIDER=${process.env.AI_PROVIDER}`);
+
   // The admin account is only needed on first start; the database already holds it afterwards.
   if (t.admin_password_hash) {
     env.push(`ADMIN_NAME=${t.admin_name}`, `ADMIN_EMAIL=${t.admin_email}`, `ADMIN_PASSWORD_HASH=${t.admin_password_hash}`);

@@ -139,3 +139,32 @@ CREATE TABLE IF NOT EXISTS transcript_segments (
   text TEXT NOT NULL,
   UNIQUE (meeting_id, seq)
 );
+ALTER TABLE processing_jobs ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT 'transcribe';
+CREATE TABLE IF NOT EXISTS meeting_analysis (
+  meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
+  executive_summary TEXT,
+  detailed_summary TEXT,
+  key_points JSONB NOT NULL DEFAULT '[]'::jsonb,
+  decisions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  follow_ups JSONB NOT NULL DEFAULT '[]'::jsonb,
+  open_questions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  risks JSONB NOT NULL DEFAULT '[]'::jsonb,
+  legal JSONB,
+  provider TEXT,
+  model TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS action_items (
+  id SERIAL PRIMARY KEY,
+  meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  description TEXT NOT NULL,
+  owner TEXT,
+  due_text TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
+  origin TEXT NOT NULL DEFAULT 'ai' CHECK (origin IN ('ai','manual')),
+  source_seq INTEGER,
+  source_start NUMERIC(10,2),
+  source_end NUMERIC(10,2),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_action_items_meeting ON action_items (meeting_id);

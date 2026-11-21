@@ -6,8 +6,10 @@ export function providerStatus() {
     : process.env.AWS_REGION && process.env.TRANSCRIBE_BUCKET
       ? { configured: true, provider: 'AWS Transcribe', message: 'Credentials and bucket are set. Recordings are transcribed in the background.' }
       : { configured: false, provider: 'AWS Transcribe', message: 'Not configured. Set AWS_REGION and TRANSCRIBE_BUCKET and attach a role with Transcribe and S3 access.' };
-  const ai = process.env.OPENAI_API_KEY
-    ? { configured: true, provider: 'OpenAI', message: 'API key is set. Analysis runs once the processing worker is enabled.' }
-    : { configured: false, provider: 'OpenAI', message: 'Not configured. Set OPENAI_API_KEY.' };
+  const ai = process.env.AI_PROVIDER === 'mock'
+    ? { configured: true, provider: 'Test provider (mock)', message: 'Automated tests only. Not a real AI service.' }
+    : process.env.GEMINI_API_KEY
+      ? { configured: true, provider: 'Google Gemini', message: 'Key is set. Summaries and action items are produced after transcription.' }
+      : { configured: false, provider: 'Google Gemini', message: 'Not configured. Set GEMINI_API_KEY.' };
   return { transcription, ai };
 }

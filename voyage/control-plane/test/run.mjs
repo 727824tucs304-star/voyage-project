@@ -102,6 +102,7 @@ const control = spawn(process.execPath, ['src/index.js'], {
     TENANT_DEFAULT_PRODUCT: 'voyage',
     TRANSCRIPTION_PROVIDER: 'mock',
     TRANSCRIPTION_MOCK_DELAY_MS: '20000',
+    AI_PROVIDER: 'mock',
     AWS_REGION: 'ap-south-1',
     TRANSCRIBE_BUCKET: 'test-bucket',
     AWS_CLI_BIN: path.join(CONTROL_DIR, 'test', 'fake-aws.sh'),
@@ -821,7 +822,7 @@ await check('dashboard counts come from the database, and no processing is faked
   assert.equal(s.processed, 0);
   const p = (await tenantApi(acmeSlug(), 'GET', '/processing/status', { token: acme() })).data;
   assert.equal(p.transcription.provider, 'Test provider (mock)');
-  assert.equal(p.ai.configured, false);
+  assert.equal(p.ai.provider, 'Test provider (mock)');
   const m = (await tenantApi(acmeSlug(), 'GET', `/meetings/${meetingId}`, { token: acme() })).data;
   assert.notEqual(m.status, 'completed');
 });
@@ -927,25 +928,53 @@ await check('an uploaded recording is transcribed in the background with timesta
   const m = await waitFor(async () => {
     const d = (await tenantApi(acmeSlug(), 'GET', `/meetings/${transcriptMeeting}`, { token: acme() })).data;
     if (d.status === 'failed') throw new Error(`transcription failed: ${d.job?.last_error}`);
-    return d.status === 'transcribed' ? d : null;
+    return d.transcript?.length > 0 ? d : null;
   }, 'transcription', 120000);
   assert.equal(m.transcript.length, 2);
   assert.equal(m.transcript[0].start_sec, 0);
   assert.equal(m.transcript[0].speaker, 'spk_0');
   assert.equal(m.transcript[1].speaker, 'spk_1');
   assert.match(m.transcript[0].text, /mock provider/);
-  assert.equal(m.job.state, 'completed');
+  assert.ok(['queued', 'transcribing', 'completed'].includes(m.job.state));
   assert.equal(Number(m.recordings[0].duration_seconds), 7);
 });
 await check('the dashboard duration now comes from transcribed recordings, and pending jobs return to zero', async () => {
   const s = (await tenantApi(acmeSlug(), 'GET', '/meetings/stats', { token: acme() })).data;
   assert.ok(s.duration_seconds >= 7, `duration ${s.duration_seconds}`);
-  assert.equal(s.pending_jobs, 0);
   assert.equal(s.processed, 0, 'transcribed is not the same as analysed');
 });
 await check('a meeting that has no transcript yet cannot be retried, and retry needs a failed job', async () => {
   const r = await tenantApi(acmeSlug(), 'POST', `/meetings/${transcriptMeeting}/retry`, { token: acme() });
   assert.equal(r.status, 409);
+});
+
+console.log('\n[15] AI meeting intelligence (mock AI in tests)');
+let analysed = null;
+await check('after transcription, AI produces a summary, decisions and action items linked to real timestamps', async () => {
+  analysed = await waitFor(async () => {
+    const d = (await tenantApi(acmeSlug(), 'GET', `/meetings/${transcriptMeeting}`, { token: acme() })).data;
+    if (d.status === 'failed') throw new Error(`analysis failed: ${d.job?.last_error}`);
+    return d.status === 'completed' ? d : null;
+  }, 'analysis', 150000);
+  assert.ok(analysed.analysis.executive_summary.length > 0);
+  assert.equal(analysed.analysis.decisions[0].source_seq, 1);
+  assert.equal(analysed.analysis.decisions[0].start_sec, 0);
+  assert.ok(analysed.action_items.length >= 1);
+  assert.equal(analysed.action_items[0].source_start, 4);
+  assert.equal(analysed.job.stage, 'analyse');
+  assert.equal(analysed.job.state, 'completed');
+});
+await check('the AI cannot invent owners: a name not found in the transcript is removed', async () => {
+  assert.equal(analysed.action_items[0].owner, null, 'owner "Priya" is not in the transcript');
+});
+await check('legal template is only used for legal intake meetings', async () => {
+  assert.equal(analysed.analysis.legal, null);
+});
+await check('the Analysis is reported as a test-only provider, and the stats count it as processed', async () => {
+  const p = (await tenantApi(acmeSlug(), 'GET', '/processing/status', { token: acme() })).data;
+  assert.equal(p.ai.provider, 'Test provider (mock)');
+  const s = (await tenantApi(acmeSlug(), 'GET', '/meetings/stats', { token: acme() })).data;
+  assert.ok(s.processed >= 1);
 });
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);

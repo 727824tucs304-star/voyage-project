@@ -1,6 +1,7 @@
 import { pool } from './db.js';
 import { recordingPath } from './storage.js';
 import { transcribe, transcriptionConfigured } from './transcription.js';
+import { analyse, aiConfigured } from './analysis.js';
 
 // Background worker. Jobs are claimed one at a time with SKIP LOCKED, so no job runs twice.
 const POLL_MS = 5000;
@@ -38,6 +39,7 @@ async function saveTranscript(job, rec, result) {
     await client.query('UPDATE recordings SET duration_seconds = $2 WHERE id = $1', [rec.id, result.durationSeconds]);
     await client.query("UPDATE processing_jobs SET state = 'completed', last_error = NULL, updated_at = now() WHERE id = $1", [job.id]);
     await client.query("UPDATE meetings SET status = 'transcribed' WHERE id = $1", [job.meeting_id]);
+    await client.query("INSERT INTO processing_jobs (meeting_id, state, stage) VALUES ($1, 'queued', 'analyse')", [job.meeting_id]);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -47,16 +49,31 @@ async function saveTranscript(job, rec, result) {
   }
 }
 
-async function runJob(job) {
+async function unclaim(job, message) {
+  await pool.query(
+    "UPDATE processing_jobs SET state = 'queued', attempts = attempts - 1, last_error = $2, updated_at = now() WHERE id = $1",
+    [job.id, message]);
+}
+
+async function runAnalysis(job) {
+  if (!aiConfigured()) return unclaim(job, 'AI analysis is not configured yet. Set GEMINI_API_KEY.');
+  await pool.query("UPDATE meetings SET status = 'analysing' WHERE id = $1", [job.meeting_id]);
+  try {
+    await analyse(job.meeting_id);
+    await pool.query("UPDATE processing_jobs SET state = 'completed', last_error = NULL, updated_at = now() WHERE id = $1", [job.id]);
+    await pool.query("UPDATE meetings SET status = 'completed' WHERE id = $1", [job.meeting_id]);
+  } catch (err) {
+    console.error('analysis failed:', err.message);
+    await fail(job, err.message, job.attempts < MAX_ATTEMPTS);
+  }
+}
+
+async function runTranscription(job) {
   const { rows: [rec] } = await pool.query(
     'SELECT * FROM recordings WHERE meeting_id = $1 ORDER BY id DESC LIMIT 1', [job.meeting_id]);
   if (!rec) return fail(job, 'No recording is attached to this meeting.', false);
   if (!transcriptionConfigured()) {
-    // Not configured: the job waits. Nothing is marked as processed.
-    await pool.query(
-      "UPDATE processing_jobs SET state = 'queued', attempts = attempts - 1, last_error = $2, updated_at = now() WHERE id = $1",
-      [job.id, 'Transcription is not configured yet. Set AWS_REGION and TRANSCRIBE_BUCKET.']);
-    return;
+    return unclaim(job, 'Transcription is not configured yet. Set AWS_REGION and TRANSCRIBE_BUCKET.');
   }
   await pool.query("UPDATE meetings SET status = 'transcribing' WHERE id = $1", [job.meeting_id]);
   try {
@@ -69,6 +86,11 @@ async function runJob(job) {
     console.error('transcription failed:', err.message);
     await fail(job, err.message, job.attempts < MAX_ATTEMPTS);
   }
+}
+
+async function runJob(job) {
+  const { rows: [j] } = await pool.query('SELECT stage FROM processing_jobs WHERE id = $1', [job.id]);
+  return j.stage === 'analyse' ? runAnalysis(job) : runTranscription(job);
 }
 
 export async function startWorker() {

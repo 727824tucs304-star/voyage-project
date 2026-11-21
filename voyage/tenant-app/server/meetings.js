@@ -104,10 +104,14 @@ meetingsRouter.get('/meetings/:id', wrap(async (req, res) => {
   const recordings = await pool.query(
     'SELECT id, original_name, content_type, bytes, duration_seconds, created_at FROM recordings WHERE meeting_id = $1 ORDER BY id', [id]);
   const job = await pool.query(
-    'SELECT state, attempts, last_error, updated_at FROM processing_jobs WHERE meeting_id = $1 ORDER BY id DESC LIMIT 1', [id]);
+    'SELECT stage, state, attempts, last_error, updated_at FROM processing_jobs WHERE meeting_id = $1 ORDER BY id DESC LIMIT 1', [id]);
   const transcript = await pool.query(
     'SELECT seq, speaker, start_sec, end_sec, text FROM transcript_segments WHERE meeting_id = $1 ORDER BY seq', [id]);
-  res.json({ ...rows[0], recordings: recordings.rows, job: job.rows[0] || null, transcript: transcript.rows });
+  const analysis = await pool.query('SELECT * FROM meeting_analysis WHERE meeting_id = $1', [id]);
+  const actions = await pool.query(
+    'SELECT id, description, owner, due_text, status, origin, source_seq, source_start FROM action_items WHERE meeting_id = $1 ORDER BY id', [id]);
+  res.json({ ...rows[0], recordings: recordings.rows, job: job.rows[0] || null, transcript: transcript.rows,
+    analysis: analysis.rows[0] || null, action_items: actions.rows });
 }));
 
 meetingsRouter.put('/meetings/:id', wrap(async (req, res) => {
