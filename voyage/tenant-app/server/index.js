@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { initDatabase } from './db.js';
 import { api } from './routes.js';
 import { HttpError } from './validate.js';
+import { startWorker } from './worker.js';
 import { countApiRequest } from './usage.js';
 
 if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is required');
@@ -48,6 +49,7 @@ async function start(attempt = 1) {
     await new Promise((r) => setTimeout(r, 2000));
     return start(attempt + 1);
   }
+  startWorker().catch((err) => console.error('worker failed to start', err.message));
   app.listen(port, host, () => {
     console.log(`Vespera tenant ${process.env.APP_VERSION || ''} listening on ${host}:${port}`);
   });

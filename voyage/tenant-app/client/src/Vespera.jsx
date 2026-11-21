@@ -22,6 +22,14 @@ const inputCls = 'w-full rounded-md border border-slate-300 px-3 py-2 text-sm fo
 
 const dateText = (d) => (d ? new Date(`${String(d).slice(0, 10)}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
 const sizeText = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+const clock = (sec) => {
+  const s = Math.floor(Number(sec) || 0);
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+};
+const speakerName = (sp) => {
+  const n = Number(String(sp).replace(/\D/g, ''));
+  return Number.isFinite(n) ? `Speaker ${n + 1}` : 'Speaker';
+};
 const durationText = (sec) => {
   const s = Math.round(Number(sec) || 0);
   const h = Math.floor(s / 3600);
@@ -247,12 +255,23 @@ export function MeetingDetailPage() {
     try { await api('DELETE', `/meetings/${id}`); navigate('/meetings'); } catch (e) { setErr(e.message); }
   };
 
+  const retry = async () => {
+    setErr('');
+    try { await api('POST', `/meetings/${id}/retry`); load(); } catch (e) { setErr(e.message); }
+  };
   if (!m) return <p className="text-sm text-slate-500">{err || 'Loading…'}</p>;
-  const processingNote = m.job && ['queued', 'transcribing', 'analysing'].includes(m.job.state)
-    ? (prov?.transcription?.configured
-      ? 'Your recording is saved and queued. Transcription starts when the processing worker is enabled.'
-      : 'Your recording is saved safely. Processing has not started because transcription is not configured yet.')
-    : m.status === 'completed' ? 'Processing is complete.' : 'Upload a recording to start processing.';
+  const job = m.job;
+  const processingNote = m.status === 'transcribed' || job?.state === 'completed'
+    ? 'Transcript is ready. Summaries, decisions and action items are the next processing step.'
+    : m.status === 'transcribing' || job?.state === 'transcribing'
+      ? 'Transcribing now. Long recordings can take several minutes.'
+      : m.status === 'failed'
+        ? 'Transcription failed. You can retry it below.'
+        : job && job.state === 'queued'
+          ? (prov?.transcription?.configured
+            ? 'Waiting in the processing queue.'
+            : 'Your recording is saved safely. Transcription is not configured yet, so processing has not started.')
+          : 'Upload a recording to start processing.';
 
   return (
     <>
@@ -271,7 +290,25 @@ export function MeetingDetailPage() {
           <h2 className="mb-2 flex items-center gap-2 font-medium text-slate-900"><Clock className="h-4 w-4 text-violet-700" />Processing</h2>
           <p className="text-sm text-slate-600">{processingNote}</p>
           {m.job?.last_error && <p className="mt-2 text-sm text-red-600">{m.job.last_error}</p>}
+          {m.status === 'failed' && <Button variant="ghost" className="mt-3" onClick={retry}>Retry transcription</Button>}
         </Card>
+        {m.transcript?.length > 0 && (
+          <Card className="p-5 lg:col-span-2">
+            <h2 className="mb-3 font-medium text-slate-900">Transcript</h2>
+            <ol className="space-y-4 text-sm">
+              {m.transcript.map((seg) => (
+                <li key={seg.seq} className="flex gap-4">
+                  <span className="w-14 shrink-0 pt-0.5 font-mono text-xs text-violet-700">{clock(seg.start_sec)}</span>
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium text-slate-500">{seg.speaker ? speakerName(seg.speaker) : 'Speaker'}</div>
+                    <p className="mt-0.5 leading-relaxed text-slate-800">{seg.text}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            <p className="mt-4 text-xs text-slate-500">Timestamps and speaker labels come from the transcription service. Review before relying on them.</p>
+          </Card>
+        )}
         <Card className="p-5 lg:col-span-2">
           <h2 className="mb-3 font-medium text-slate-900">Recording</h2>
           <label className="mb-3 flex items-start gap-2 rounded-md bg-violet-50 p-3 text-sm text-slate-700">

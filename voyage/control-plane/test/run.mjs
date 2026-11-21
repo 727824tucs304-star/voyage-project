@@ -100,6 +100,10 @@ const control = spawn(process.execPath, ['src/index.js'], {
     METER_INTERVAL_MS: '3000',
     STORAGE_ROOT: path.join(WORK, 'files'),
     TENANT_DEFAULT_PRODUCT: 'voyage',
+    TRANSCRIPTION_PROVIDER: 'mock',
+    TRANSCRIPTION_MOCK_DELAY_MS: '20000',
+    AWS_REGION: 'ap-south-1',
+    TRANSCRIBE_BUCKET: 'test-bucket',
     AWS_CLI_BIN: path.join(CONTROL_DIR, 'test', 'fake-aws.sh'),
     AWS_MODE_FILE: path.join(WORK, 'aws-mode'),
   },
@@ -806,7 +810,7 @@ await check('an accepted recording is stored privately and queued; a second uplo
   assert.equal(ok.status, 201, await ok.text());
   assert.equal((await upload(acmeSlug(), meetingId, 'intake2.mp3', 'audio/mpeg', MP3, true, acme())).status, 409);
   const m = (await tenantApi(acmeSlug(), 'GET', `/meetings/${meetingId}`, { token: acme() })).data;
-  assert.equal(m.status, 'queued');
+  assert.ok(['queued', 'transcribing'].includes(m.status), `status ${m.status}`);
   assert.equal(m.recordings.length, 1);
   recordingId = m.recordings[0].id;
 });
@@ -816,7 +820,7 @@ await check('dashboard counts come from the database, and no processing is faked
   assert.equal(s.pending_jobs, 1);
   assert.equal(s.processed, 0);
   const p = (await tenantApi(acmeSlug(), 'GET', '/processing/status', { token: acme() })).data;
-  assert.equal(p.transcription.configured, false);
+  assert.equal(p.transcription.provider, 'Test provider (mock)');
   assert.equal(p.ai.configured, false);
   const m = (await tenantApi(acmeSlug(), 'GET', `/meetings/${meetingId}`, { token: acme() })).data;
   assert.notEqual(m.status, 'completed');
@@ -909,6 +913,39 @@ await check('registration still provisions a new isolated workspace after archiv
   await waitReady(r.data.slug);
   assert.equal((await tenantApi(r.data.slug, 'GET', '/health')).status, 200);
   assert.equal((await dockerApi('GET', `/containers/voyage-tenant-${r.data.slug}/json`)).status, 200);
+});
+
+console.log('\n[14] Transcription pipeline (mock provider in tests)');
+let transcriptMeeting = null;
+await check('an uploaded recording is transcribed in the background with timestamps and speakers', async () => {
+  const c = await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: 'Transcript test call', category: 'client_call', meeting_date: '2099-06-01' } });
+  transcriptMeeting = c.data.id;
+  const up = await fetch(`http://voyage-tenant-${acmeSlug()}:3000/api/meetings/${transcriptMeeting}/recording`, {
+    method: 'POST', headers: { 'Content-Type': 'audio/mpeg', 'x-file-name': 'call.mp3', 'x-consent': 'confirmed', Authorization: `Bearer ${acme()}` }, body: MP3,
+  });
+  assert.equal(up.status, 201, await up.text());
+  const m = await waitFor(async () => {
+    const d = (await tenantApi(acmeSlug(), 'GET', `/meetings/${transcriptMeeting}`, { token: acme() })).data;
+    if (d.status === 'failed') throw new Error(`transcription failed: ${d.job?.last_error}`);
+    return d.status === 'transcribed' ? d : null;
+  }, 'transcription', 120000);
+  assert.equal(m.transcript.length, 2);
+  assert.equal(m.transcript[0].start_sec, 0);
+  assert.equal(m.transcript[0].speaker, 'spk_0');
+  assert.equal(m.transcript[1].speaker, 'spk_1');
+  assert.match(m.transcript[0].text, /mock provider/);
+  assert.equal(m.job.state, 'completed');
+  assert.equal(Number(m.recordings[0].duration_seconds), 7);
+});
+await check('the dashboard duration now comes from transcribed recordings, and pending jobs return to zero', async () => {
+  const s = (await tenantApi(acmeSlug(), 'GET', '/meetings/stats', { token: acme() })).data;
+  assert.ok(s.duration_seconds >= 7, `duration ${s.duration_seconds}`);
+  assert.equal(s.pending_jobs, 0);
+  assert.equal(s.processed, 0, 'transcribed is not the same as analysed');
+});
+await check('a meeting that has no transcript yet cannot be retried, and retry needs a failed job', async () => {
+  const r = await tenantApi(acmeSlug(), 'POST', `/meetings/${transcriptMeeting}/retry`, { token: acme() });
+  assert.equal(r.status, 409);
 });
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);

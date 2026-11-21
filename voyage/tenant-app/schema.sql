@@ -126,3 +126,16 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_meetings_date ON meetings (meeting_date);
 CREATE INDEX IF NOT EXISTS idx_jobs_meeting ON processing_jobs (meeting_id, state);
+ALTER TABLE meetings DROP CONSTRAINT IF EXISTS meetings_status_check;
+ALTER TABLE meetings ADD CONSTRAINT meetings_status_check
+  CHECK (status IN ('draft','uploaded','queued','transcribing','transcribed','analysing','completed','failed'));
+CREATE TABLE IF NOT EXISTS transcript_segments (
+  id SERIAL PRIMARY KEY,
+  meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  speaker TEXT,
+  start_sec NUMERIC(10,2) NOT NULL,
+  end_sec NUMERIC(10,2) NOT NULL,
+  text TEXT NOT NULL,
+  UNIQUE (meeting_id, seq)
+);

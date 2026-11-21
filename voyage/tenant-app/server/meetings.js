@@ -105,7 +105,9 @@ meetingsRouter.get('/meetings/:id', wrap(async (req, res) => {
     'SELECT id, original_name, content_type, bytes, duration_seconds, created_at FROM recordings WHERE meeting_id = $1 ORDER BY id', [id]);
   const job = await pool.query(
     'SELECT state, attempts, last_error, updated_at FROM processing_jobs WHERE meeting_id = $1 ORDER BY id DESC LIMIT 1', [id]);
-  res.json({ ...rows[0], recordings: recordings.rows, job: job.rows[0] || null });
+  const transcript = await pool.query(
+    'SELECT seq, speaker, start_sec, end_sec, text FROM transcript_segments WHERE meeting_id = $1 ORDER BY seq', [id]);
+  res.json({ ...rows[0], recordings: recordings.rows, job: job.rows[0] || null, transcript: transcript.rows });
 }));
 
 meetingsRouter.put('/meetings/:id', wrap(async (req, res) => {
@@ -126,6 +128,16 @@ meetingsRouter.delete('/meetings/:id', wrap(async (req, res) => {
   await pool.query('DELETE FROM meetings WHERE id = $1', [id]);
   removeMeetingFiles(id);
   res.status(204).end();
+}));
+
+meetingsRouter.post('/meetings/:id/retry', wrap(async (req, res) => {
+  const id = idOf(req);
+  await requireMeeting(id);
+  const { rowCount } = await pool.query(
+    "UPDATE processing_jobs SET state = 'queued', attempts = 0, last_error = NULL, updated_at = now() WHERE meeting_id = $1 AND state = 'failed'", [id]);
+  if (!rowCount) throw new HttpError(409, 'Only failed processing can be retried.');
+  await pool.query("UPDATE meetings SET status = 'queued' WHERE id = $1", [id]);
+  res.status(202).json({ id, status: 'queued' });
 }));
 
 // Raw upload. Requires explicit consent, validates type and size before reading the body, and never runs

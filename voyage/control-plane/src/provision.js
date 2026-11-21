@@ -106,6 +106,11 @@ async function ensureContainer(t, version, { force = false, product = t.product 
     `PORT=${config.tenantPort}`,
     'HOST=0.0.0.0',
   ];
+  env.push(`TENANT_SLUG=${t.slug}`, `TRANSCRIPTION_PROVIDER=${process.env.TRANSCRIPTION_PROVIDER || 'aws'}`, `TRANSCRIBE_LANGUAGE=${process.env.TRANSCRIBE_LANGUAGE || 'en-US'}`);
+  if (process.env.AWS_REGION) env.push(`AWS_REGION=${process.env.AWS_REGION}`);
+  if (process.env.TRANSCRIBE_BUCKET) env.push(`TRANSCRIBE_BUCKET=${process.env.TRANSCRIBE_BUCKET}`);
+  if (process.env.TRANSCRIPTION_MOCK_DELAY_MS) env.push(`TRANSCRIPTION_MOCK_DELAY_MS=${process.env.TRANSCRIPTION_MOCK_DELAY_MS}`);
+
   // The admin account is only needed on first start; the database already holds it afterwards.
   if (t.admin_password_hash) {
     env.push(`ADMIN_NAME=${t.admin_name}`, `ADMIN_EMAIL=${t.admin_email}`, `ADMIN_PASSWORD_HASH=${t.admin_password_hash}`);
