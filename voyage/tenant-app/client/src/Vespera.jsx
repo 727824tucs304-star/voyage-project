@@ -229,6 +229,18 @@ export function MeetingDetailPage() {
     .then(([a, b]) => { setM(a); setProv(b); }).catch((e) => setErr(e.message)), [id]);
   useEffect(() => { load(); }, [load]);
 
+  // Live updates: while a meeting is still being processed, refresh every 4 seconds.
+  // The check stops by itself once processing finishes or fails.
+  const processing = Boolean(m) && (
+    ['queued', 'transcribing', 'transcribed', 'analysing'].includes(m.status)
+    || ['queued', 'transcribing'].includes(m.job?.state)
+  ) && m.status !== 'failed' && m.status !== 'completed';
+  useEffect(() => {
+    if (!processing) return undefined;
+    const timer = setInterval(load, 4000);
+    return () => clearInterval(timer);
+  }, [processing, load]);
+
   const upload = async (file) => {
     setErr('');
     if (!consent) { setErr('Confirm that every participant has agreed to this recording before you upload.'); return; }
@@ -304,6 +316,7 @@ export function MeetingDetailPage() {
         <Card className="p-5">
           <h2 className="mb-2 flex items-center gap-2 font-medium text-slate-900"><Clock className="h-4 w-4 text-violet-700" />Processing</h2>
           <p className="text-sm text-slate-600">{processingNote}</p>
+          {processing && <p className="mt-2 text-xs text-violet-700">Updating automatically…</p>}
           {m.job?.last_error && <p className="mt-2 text-sm text-red-600">{m.job.last_error}</p>}
           {m.status === 'failed' && <Button variant="ghost" className="mt-3" onClick={retry}>Retry transcription</Button>}
         </Card>
