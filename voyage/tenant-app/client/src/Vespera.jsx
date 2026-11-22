@@ -12,6 +12,9 @@ export const STATUS = {
   draft: 'Draft', uploaded: 'Uploaded', queued: 'Waiting for transcription', transcribing: 'Transcribing',
   analysing: 'Analysing', completed: 'Completed', failed: 'Failed',
 };
+const SECTOR_LABELS = {
+  legal: 'Legal', sales: 'B2B sales', healthcare: 'Healthcare', financial: 'Financial advisory', hr: 'Recruitment and HR', general: 'General',
+};
 const STATUS_STYLE = {
   draft: 'bg-slate-100 text-slate-700', uploaded: 'bg-slate-100 text-slate-700', queued: 'bg-amber-50 text-amber-800',
   transcribing: 'bg-violet-50 text-violet-700', analysing: 'bg-violet-50 text-violet-700',
@@ -19,6 +22,7 @@ const STATUS_STYLE = {
 };
 const MIME = { mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', mp4: 'video/mp4', webm: 'video/webm' };
 const inputCls = 'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-violet-600 focus:outline-none focus:ring-1 focus:ring-violet-600';
+const EMPTY_FILTERS = { q: '', category: '', status: '', from: '', to: '' };
 
 const dateText = (d) => (d ? new Date(`${String(d).slice(0, 10)}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
 const sizeText = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
@@ -30,6 +34,16 @@ const speakerName = (sp) => {
   const n = Number(String(sp).replace(/\D/g, ''));
   return Number.isFinite(n) ? `Speaker ${n + 1}` : 'Speaker';
 };
+const humanize = (key) => {
+  const s = key.replace(/_/g, ' ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+};
+const durationText = (sec) => {
+  const s = Math.round(Number(sec) || 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h} h ${m} min` : `${m} min`;
+};
 const Block = ({ title, children }) => (
   <div className="mt-5">
     <h3 className="mb-2 text-sm font-semibold text-slate-900">{title}</h3>
@@ -37,17 +51,21 @@ const Block = ({ title, children }) => (
   </div>
 );
 const Bullets = ({ items }) => (items?.length ? (
-  <ul className="list-disc space-y-1 pl-5 text-sm text-slate-700">{items.map((x, i) => <li key={i}>{x}</li>)}</ul>
+  <ul className="list-disc space-y-1 pl-5 text-sm text-slate-700">{items.map((x, i) => <li key={i}>{typeof x === 'object' ? x.text : x}</li>)}</ul>
 ) : <p className="text-sm text-slate-400">None stated.</p>);
 const TimeChip = ({ sec, seq }) => (sec == null ? null : (
   <a href={`#seg-${seq}`} className="ml-2 rounded bg-violet-50 px-1.5 py-0.5 font-mono text-xs text-violet-700 hover:underline">{clock(sec)}</a>
 ));
-const durationText = (sec) => {
-  const s = Math.round(Number(sec) || 0);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return h ? `${h} h ${m} min` : `${m} min`;
-};
+// Renders whatever workflow fields the analysis contains. Empty fields are not shown.
+const SectorFields = ({ data }) => Object.entries(data || {})
+  .filter(([, v]) => (Array.isArray(v) ? v.length > 0 : Boolean(v)))
+  .map(([key, v]) => (
+    <Block key={key} title={humanize(key)}>
+      {Array.isArray(v)
+        ? <Bullets items={v} />
+        : <p className="text-sm text-slate-700">{v}</p>}
+    </Block>
+  ));
 
 function Header({ title, subtitle, children }) {
   return (
@@ -163,7 +181,7 @@ function MeetingForm({ onSaved, onCancel }) {
 
 export function MeetingsPage() {
   const navigate = useNavigate();
-  const [filters, setFilters] = useState({ q: '', category: '', status: '', from: '', to: '' });
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [creating, setCreating] = useState(false);
@@ -172,25 +190,45 @@ export function MeetingsPage() {
     return api('GET', `/meetings?${p}`).then((r) => { setRows(r); setErr(''); }).catch((e) => setErr(e.message));
   }, [filters]);
   useEffect(() => { load(); }, [load]);
-  const set = (k) => (e) => setFilters({ ...filters, [k]: e.target.value });
+  const set = (k) => (e) => setFilters((f) => ({ ...f, [k]: e.target.value }));
+  const anyFilter = Object.values(filters).some(Boolean);
 
   return (
     <>
       <Header title="Meetings" subtitle="Record, search and review every meeting in one place.">
         <Button onClick={() => setCreating(true)}><Plus className="h-4 w-4" />New meeting</Button>
       </Header>
-      <Card className="mb-4 grid gap-3 p-4 md:grid-cols-5">
-        <label className="relative md:col-span-2"><Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-          <input className={`${inputCls} pl-9`} placeholder="Search titles, descriptions, participants" value={filters.q} onChange={set('q')} /></label>
-        <select className={inputCls} value={filters.category} onChange={set('category')}>
-          <option value="">All categories</option>{Object.entries(CATEGORY).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
-        <select className={inputCls} value={filters.status} onChange={set('status')}>
-          <option value="">All statuses</option>{Object.entries(STATUS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
-        <div className="flex gap-2">
-          <input className={inputCls} type="date" aria-label="From" value={filters.from} onChange={set('from')} />
-          <input className={inputCls} type="date" aria-label="To" value={filters.to} onChange={set('to')} />
-        </div>
+      <Card className="mb-2 grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-6">
+        <label className="relative block sm:col-span-2">
+          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+          <input className={`${inputCls} pl-9`} placeholder="Search titles, descriptions, participants" value={filters.q} onChange={set('q')} />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-500">Category</span>
+          <select className={inputCls} value={filters.category} onChange={set('category')}>
+            <option value="">All categories</option>{Object.entries(CATEGORY).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-500">Status</span>
+          <select className={inputCls} value={filters.status} onChange={set('status')}>
+            <option value="">All statuses</option>{Object.entries(STATUS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-500">From date</span>
+          <input className={inputCls} type="date" value={filters.from} onChange={set('from')} />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-slate-500">To date</span>
+          <input className={inputCls} type="date" value={filters.to} onChange={set('to')} />
+        </label>
       </Card>
+      <div className="mb-4 flex h-6 justify-end">
+        {anyFilter && (
+          <button type="button" className="text-sm text-violet-700 hover:underline" onClick={() => setFilters(EMPTY_FILTERS)}>
+            Clear filters
+          </button>
+        )}
+      </div>
       {err && <p className="mb-4 text-sm text-red-600">{err}</p>}
       <Card className="overflow-x-auto">
         {!rows ? <p className="p-6 text-sm text-slate-500">Loading…</p>
@@ -300,6 +338,9 @@ export function MeetingDetailPage() {
             : 'Your recording is saved safely. Transcription is not configured yet, so processing has not started.')
           : 'Upload a recording to start processing.';
 
+  const a = m.analysis;
+  const workflowData = a && Object.keys(a.sector_fields || {}).length ? a.sector_fields : a?.legal;
+
   return (
     <>
       <Link to="/meetings" className="mb-4 inline-block text-sm text-violet-700">← All meetings</Link>
@@ -337,52 +378,52 @@ export function MeetingDetailPage() {
             <p className="mt-4 text-xs text-slate-500">Timestamps and speaker labels come from the transcription service. Review before relying on them.</p>
           </Card>
         )}
-        {m.analysis && (
+        {a && (
           <Card className="p-5 lg:col-span-2">
-            <div className="mb-1 flex items-center justify-between gap-3">
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
               <h2 className="font-medium text-slate-900">AI meeting intelligence</h2>
               <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800">Draft for review</span>
             </div>
-            <p className="text-xs text-slate-500">Generated by AI from the transcript. Check each point against the recording before you rely on it. This is not legal advice.</p>
-            <Block title="Executive summary"><p className="text-sm leading-relaxed text-slate-700">{m.analysis.executive_summary}</p></Block>
-            <Block title="Detailed summary"><p className="whitespace-pre-line text-sm leading-relaxed text-slate-700">{m.analysis.detailed_summary}</p></Block>
+            <p className="text-xs text-slate-500">Generated by AI from the transcript. Check each point against the recording before you rely on it. This is not legal, medical or financial advice.</p>
+            {a.sector && <p className="mt-3 text-xs font-medium uppercase tracking-wide text-violet-700">Workflow: {SECTOR_LABELS[a.sector] || 'General'}</p>}
+            <Block title="Executive summary"><p className="text-sm leading-relaxed text-slate-700">{a.executive_summary}</p></Block>
+            <Block title="Detailed summary"><p className="whitespace-pre-line text-sm leading-relaxed text-slate-700">{a.detailed_summary}</p></Block>
             <Block title="Key points">
-              <ul className="space-y-1 text-sm text-slate-700">{(m.analysis.key_points || []).map((k, i) => <li key={i}>{k.text}<TimeChip sec={k.start_sec} seq={k.source_seq} /></li>)}</ul>
+              <ul className="space-y-1 text-sm text-slate-700">{(a.key_points || []).map((k, i) => <li key={i}>{k.text}<TimeChip sec={k.start_sec} seq={k.source_seq} /></li>)}</ul>
             </Block>
             <Block title="Decisions">
-              <ul className="space-y-1 text-sm text-slate-700">{(m.analysis.decisions || []).map((d, i) => <li key={i}>{d.text}<TimeChip sec={d.start_sec} seq={d.source_seq} /></li>)}</ul>
-              {!(m.analysis.decisions || []).length && <p className="text-sm text-slate-400">No decisions stated.</p>}
+              <ul className="space-y-1 text-sm text-slate-700">{(a.decisions || []).map((d, i) => <li key={i}>{d.text}<TimeChip sec={d.start_sec} seq={d.source_seq} /></li>)}</ul>
+              {!(a.decisions || []).length && <p className="text-sm text-slate-400">No decisions stated.</p>}
             </Block>
             <Block title="Action items">
               {(m.action_items || []).length === 0 ? <p className="text-sm text-slate-400">No action items stated.</p> : (
                 <ul className="divide-y divide-slate-100 text-sm">
-                  {m.action_items.map((a) => (
-                    <li key={a.id} className="py-2">
-                      <span className="text-slate-800">{a.description}</span>
-                      <TimeChip sec={a.source_start} seq={a.source_seq} />
+                  {m.action_items.map((item) => (
+                    <li key={item.id} className="py-2">
+                      <span className="text-slate-800">{item.description}</span>
+                      <TimeChip sec={item.source_start} seq={item.source_seq} />
                       <div className="mt-0.5 text-xs text-slate-500">
-                        Owner: {a.owner || 'not stated'} · Deadline: {a.due_text || 'not stated'}
+                        Owner: {item.owner || 'not stated'} · Deadline: {item.due_text || 'not stated'}
                       </div>
                     </li>
                   ))}
                 </ul>
               )}
             </Block>
-            <Block title="Follow-ups"><Bullets items={m.analysis.follow_ups} /></Block>
-            <Block title="Open questions"><Bullets items={m.analysis.open_questions} /></Block>
-            <Block title="Risks and concerns"><Bullets items={m.analysis.risks} /></Block>
-            {m.analysis.legal && (
-              <Block title="Legal intake (for professional review)">
-                <div className="space-y-2 text-sm text-slate-700">
-                  <p><span className="text-slate-500">Client and matter:</span> {m.analysis.legal.client_matter || 'Unknown from the transcript'}</p>
-                  <p className="font-medium">Facts discussed</p><Bullets items={m.analysis.legal.facts_discussed} />
-                  <p className="font-medium">Commitments</p><Bullets items={m.analysis.legal.commitments} />
-                  <p className="font-medium">Outstanding documents</p><Bullets items={m.analysis.legal.outstanding_documents} />
-                  <p className="font-medium">Deadlines and follow-ups</p><Bullets items={m.analysis.legal.deadlines_follow_ups} />
-                  <p className="font-medium">Issues requiring professional review</p><Bullets items={m.analysis.legal.review_flags} />
-                </div>
-              </Block>
-            )}
+            <Block title="Possible conflicts (check both statements)">
+              {(a.flags || []).length === 0 ? <p className="text-sm text-slate-400">None flagged.</p> : (
+                <ul className="space-y-2 text-sm text-slate-700">
+                  {a.flags.map((fl, i) => (
+                    <li key={i}>{fl.summary}<TimeChip sec={fl.start_a} seq={fl.seq_a} /><TimeChip sec={fl.start_b} seq={fl.seq_b} /></li>
+                  ))}
+                </ul>
+              )}
+            </Block>
+            <Block title="Follow-ups"><Bullets items={a.follow_ups} /></Block>
+            <Block title="Open questions"><Bullets items={a.open_questions} /></Block>
+            <Block title="Risks and concerns"><Bullets items={a.risks} /></Block>
+            <SectorFields data={workflowData} />
+            <Block title="Points for professional review"><Bullets items={a.review_notes} /></Block>
           </Card>
         )}
         <Card className="p-5 lg:col-span-2">

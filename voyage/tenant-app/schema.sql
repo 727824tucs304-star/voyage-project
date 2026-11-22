@@ -168,3 +168,8 @@ CREATE TABLE IF NOT EXISTS action_items (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_action_items_meeting ON action_items (meeting_id);
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS sector TEXT;
+ALTER TABLE meeting_analysis ADD COLUMN IF NOT EXISTS sector TEXT;
+ALTER TABLE meeting_analysis ADD COLUMN IF NOT EXISTS sector_fields JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE meeting_analysis ADD COLUMN IF NOT EXISTS flags JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE meeting_analysis ADD COLUMN IF NOT EXISTS review_notes JSONB NOT NULL DEFAULT '[]'::jsonb;
