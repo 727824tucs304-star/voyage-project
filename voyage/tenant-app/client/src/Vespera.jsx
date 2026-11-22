@@ -426,6 +426,33 @@ export function MeetingDetailPage() {
     URL.revokeObjectURL(url);
   };
 
+  const fetchReport = async (path) => {
+    const res = await fetch(`/api/meetings/${id}/${path}`, { headers: { Authorization: `Bearer ${session.get()}` } });
+    if (!res.ok) throw new Error('The report could not be created.');
+    return res;
+  };
+  const printReport = async () => {
+    setErr('');
+    try {
+      const html = await (await fetchReport('report.html')).text();
+      const w = window.open('', '_blank');
+      if (!w) return setErr('Allow pop-ups for this site to open the report.');
+      w.document.open();
+      w.document.write(html);
+      w.document.close();
+      setTimeout(() => w.print(), 400);
+    } catch (e) { setErr(e.message); }
+  };
+  const downloadWord = async () => {
+    setErr('');
+    try {
+      const url = URL.createObjectURL(await (await fetchReport('report.doc')).blob());
+      const a = Object.assign(document.createElement('a'), { href: url, download: `vespera-report-${id}.doc` });
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { setErr(e.message); }
+  };
+
   const retry = async () => {
     setErr('');
     try { await api('POST', `/meetings/${id}/retry`); load(); } catch (e) { setErr(e.message); }
@@ -456,6 +483,8 @@ export function MeetingDetailPage() {
       <Header title={m.title} subtitle={`${dateText(m.meeting_date)} · ${CATEGORY[m.category]}`}>
         <Pill status={m.status} />
         {(m.action_items || []).length > 0 && <Button variant="ghost" onClick={exportCsv}><Download className="h-4 w-4" />Export tasks (CSV)</Button>}
+        {a && <Button variant="ghost" onClick={printReport}>Print / save as PDF</Button>}
+        {a && <Button variant="ghost" onClick={downloadWord}>Download Word</Button>}
       </Header>
       {err && <p className="mb-4 text-sm text-red-600">{err}</p>}
       <div className="grid max-w-5xl gap-5 lg:grid-cols-2">

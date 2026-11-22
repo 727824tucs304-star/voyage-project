@@ -4,6 +4,7 @@ import { pool } from './db.js';
 import { HttpError, text, date, oneOf } from './validate.js';
 import { checkRecordingHeaders, saveStream, recordingPath, removeMeetingFiles } from './storage.js';
 import { providerStatus } from './providers.js';
+import { buildReport } from './report.js';
 
 export const CATEGORIES = ['legal_intake', 'internal_case', 'client_call', 'board', 'other'];
 export const STATUSES = ['draft', 'uploaded', 'queued', 'transcribing', 'analysing', 'completed', 'failed'];
@@ -259,6 +260,22 @@ meetingsRouter.post('/meetings/:id/recording', async (req, res, next) => {
     next(err);
   }
 });
+
+// Printable report. The browser's Print dialog saves it as PDF; the Word download is the same report.
+meetingsRouter.get('/meetings/:id/report.html', wrap(async (req, res) => {
+  const html = await buildReport(idOf(req));
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(html);
+}));
+meetingsRouter.get('/meetings/:id/report.doc', wrap(async (req, res) => {
+  const id = idOf(req);
+  const html = await buildReport(id);
+  res.setHeader('Content-Type', 'application/msword');
+  res.setHeader('Content-Disposition', `attachment; filename="vespera-report-${id}.doc"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(html);
+}));
 
 meetingsRouter.get('/meetings/:id/recordings/:rid', wrap(async (req, res) => {
   const id = idOf(req);
