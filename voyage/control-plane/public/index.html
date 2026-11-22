@@ -184,9 +184,10 @@ async function admin() {
         <span class="muted">Vespera releases: ${releases.versions.map(label).join(', ') || 'none yet'} · next: ${esc(label(releases.next))}</span>
       </div>
       <div class="bar" style="margin-bottom:10px">
-        <button data-action="build-release">Build next Vespera release from latest commit</button>
+        <button data-action="build-release">Build ${esc(String(releases.next).toUpperCase())} from latest commit</button>
       </div>
       <p id="amsg" class="muted" style="margin:6px 0"></p>
+      <div id="bprog"></div>
       <div style="overflow-x:auto"><table>
         <tr><th>Customer</th><th>Domain</th><th>Database</th><th>Container</th><th>Product · release</th><th>Status</th><th>Actions</th></tr>
         ${rows.join('') || '<tr><td colspan="7" class="muted">No customers yet.</td></tr>'}
@@ -284,12 +285,13 @@ async function refreshDev(first) {
       A('GET', '/api/admin/github/commits'),
       A('GET', `/api/admin/releases/history?slug=${q}`),
       A('GET', `/api/admin/releases/status?slug=${q}`),
+      A('GET', '/api/admin/products/vespera/builds'),
     ]);
   } catch (e) {
     return say(e.message, true);
   }
   if (currentSlug !== slug || !document.getElementById('pDeployed')) return;
-  const [tenants, changes, commits, hist, status] = data;
+  const [tenants, changes, commits, hist, status, builds] = data;
   const t = tenants.find((x) => x.slug === slug);
   const latest = changes.latest;
   const newCommit = !first && lastSeenSha && latest && latest.sha !== lastSeenSha;
@@ -324,7 +326,11 @@ async function refreshDev(first) {
 
   const csel = document.getElementById('csel');
   const keep = csel.value;
-  csel.innerHTML = commits.map((c) => `<option value="${esc(c.sha)}">${esc(c.short)} · ${esc(c.message)}</option>`).join('');
+  const builtVersion = new Map((builds || []).filter((b) => b.status === 'succeeded').map((b) => [b.commit_hash, b.version]));
+  csel.innerHTML = commits.map((c) => {
+    const v = builtVersion.get(c.sha);
+    return `<option value="${esc(c.sha)}">${esc(v ? String(v).toUpperCase() : 'Not built')} · ${esc(c.short)} · ${esc(c.message)}</option>`;
+  }).join('');
   if (keep && commits.some((c) => c.sha === keep)) csel.value = keep;
 
   const busy = status.deploying || (status.latestDeployment && status.latestDeployment.status === 'running');
@@ -508,8 +514,10 @@ app.addEventListener('click', async (e) => {
       msg.textContent = `Migrating ${slug} to Vespera V1. Its data, domain and files are kept.`;
     } else if (btn.dataset.action === 'build-release') {
       const commits = await A('GET', '/api/admin/github/commits');
+      if (!commits.length) throw new Error('No commits were found on the configured branch, so there is nothing to build.');
       const r = await A('POST', '/api/admin/products/vespera/build', { sha: commits[0].sha });
-      msg.textContent = `Building Vespera ${label(r.version)} from commit ${commits[0].short}. This takes a few minutes.`;
+      msg.textContent = `Building Vespera ${String(r.version).toUpperCase()} from commit ${commits[0].short}. Progress is shown below.`;
+      watchBuild(r.id);
     } else if (btn.dataset.action === 'retry') {
       await api('POST', `/api/tenants/${encodeURIComponent(slug)}/retry`);
       msg.textContent = `Retrying provisioning for ${slug}.`;
@@ -521,6 +529,40 @@ app.addEventListener('click', async (e) => {
   clearTimeout(timer);
   timer = setTimeout(admin, 800);
 });
+
+const BUILD_STAGES = [['starting', 'Preparing build'], ['building', 'Building image'], ['tagging', 'Tagging release'], ['done', 'Ready to deploy']];
+function progressHtml(b) {
+  const p = b.progress || { key: 'starting', percent: 5, detail: '' };
+  const failed = b.status === 'failed';
+  const done = b.status === 'succeeded';
+  const current = BUILD_STAGES.findIndex(([k]) => k === p.key);
+  const steps = BUILD_STAGES.map(([k, name], i) => {
+    const isDone = done || (!failed && current > i);
+    const isActive = !failed && !done && i === current;
+    const mark = isDone ? '✓' : isActive ? '…' : '○';
+    const colour = isDone ? '#047857' : isActive ? '#4c1d95' : '#94a3b8';
+    const detail = isActive && p.detail ? ` (${esc(p.detail)})` : '';
+    return `<li style="color:${colour}">${mark} ${esc(name)}${detail}</li>`;
+  }).join('');
+  const bar = failed ? '' : `<div style="background:#e2e8f0;border-radius:6px;height:8px;margin:8px 0"><div style="background:#4c1d95;height:8px;border-radius:6px;width:${done ? 100 : p.percent}%"></div></div>`;
+  const title = failed ? 'Failed' : done ? 'Ready to deploy' : 'Building';
+  const errorText = failed ? `<pre style="white-space:pre-wrap;font-size:12px;background:#fef2f2;padding:8px;border-radius:6px">${esc(b.log_tail || 'The build failed. See the server log.')}</pre>` : '';
+  return `<div class="card" style="margin:8px 0"><strong>Vespera ${esc(String(b.version).toUpperCase())} · ${title}</strong>${bar}<ul style="list-style:none;padding:0;margin:6px 0;font-size:14px">${steps}</ul>${errorText}</div>`;
+}
+async function watchBuild(id) {
+  const tick = async () => {
+    try {
+      const builds = await A('GET', '/api/admin/products/vespera/builds');
+      const b = builds.find((x) => x.id === id);
+      const box = document.getElementById('bprog');
+      if (b && box) box.innerHTML = progressHtml(b);
+      if (!b || b.status === 'running') return setTimeout(tick, 3000);
+    } catch (e) {
+      return setTimeout(tick, 5000);
+    }
+  };
+  tick();
+}
 
 function route() {
   clearTimeout(timer);

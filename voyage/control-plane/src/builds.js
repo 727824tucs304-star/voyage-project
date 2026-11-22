@@ -9,6 +9,7 @@ import { fetchBranch, exportTenantApp } from './git.js';
 import { imageRef, imageRepo } from './products.js';
 import { HttpError } from './errors.js';
 import { audit } from './audit.js';
+import { progressOf } from './build-progress.js';
 
 const oneLine = (s, max = 200) => String(s || '').split('\n')[0].replace(/[\x00-\x1f\x7f]/g, '').slice(0, max);
 
@@ -93,9 +94,9 @@ export async function releaseInfo(version, product = 'vespera') {
 
 export async function listBuilds(product = 'vespera') {
   const { rows } = await db.query(
-    `SELECT id, product, version, commit_hash, commit_message, status, created_at, finished_at, right(log, 1500) AS log_tail
+    `SELECT id, product, version, commit_hash, commit_message, status, created_at, finished_at, log, right(log, 1500) AS log_tail
      FROM builds WHERE product = $1 ORDER BY id DESC LIMIT 20`, [product]);
-  return rows;
+  return rows.map(({ log, ...r }) => ({ ...r, progress: progressOf(r.status, log || '') }));
 }
 
 // A build cannot survive a control-plane restart; mark leftovers as failed.
