@@ -3,7 +3,10 @@ import { pool } from './db.js';
 const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 // Longer transcripts are analysed in parts and merged, to stay within free-tier token limits.
-const CHUNK_CHARS = 9000;
+const CHUNK_CHARS = 3500;
+// Groq's free tier allows about 8,000 tokens per minute for this model. Stay below it.
+const TPM_BUDGET = Number(process.env.GROQ_TPM_BUDGET || 6500);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const LIST = 'list';
 const TEXT = 'text';
@@ -90,40 +93,72 @@ function parseJson(text) {
   }
 }
 
-async function callGroq(prompt) {
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' },
-      temperature: 0.1,
-    }),
-    signal: AbortSignal.timeout(120000),
-  });
-  if (!res.ok) {
-    console.error('groq http', res.status);
-    throw new Error('AI analysis is temporarily unavailable. It will be retried automatically.');
+
+// Free tiers pause requests when a per-minute limit is reached. Wait as instructed and retry,
+// instead of failing the whole analysis.
+async function withRetry(label, send) {
+  for (let attempt = 1; ; attempt++) {
+    const res = await send();
+    if (res.ok) return res;
+    const retriable = res.status === 429 || res.status >= 500;
+    if (!retriable || attempt >= 8) {
+      const detail = await res.text().catch(() => '');
+      console.error(`${label} http ${res.status}: ${detail.slice(0, 300)}`);
+      throw new Error('AI analysis is temporarily unavailable. It will be retried automatically.');
+    }
+    const after = Number(res.headers.get('retry-after'));
+    const waitMs = Number.isFinite(after) && after > 0 ? after * 1000 : Math.min(60000, 10000 * attempt);
+    console.warn(`${label} busy (HTTP ${res.status}), waiting ${Math.round(waitMs / 1000)}s before retry ${attempt}`);
+    await sleep(waitMs);
   }
-  const data = await res.json();
-  return parseJson(data.choices?.[0]?.message?.content || '');
+}
+
+async function callGroq(prompt) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        response_format: { type: 'json_object' },
+        reasoning_effort: 'low',
+        max_completion_tokens: 3000,
+        temperature: 0.1,
+      }),
+      signal: AbortSignal.timeout(180000),
+    });
+    if (res.status === 429) {
+      const wait = Number(res.headers.get('retry-after')) || 30 * attempt;
+      // A very long wait means the daily free allowance is used up. Do not hold the job open for hours.
+      if (wait > 300) throw new Error('The daily free AI allowance has been reached. Analysis will be retried later.');
+      console.warn(`groq rate limited; waiting ${wait}s (attempt ${attempt})`);
+      await sleep(wait * 1000);
+      continue;
+    }
+    if (!res.ok) {
+      console.error('groq http', res.status);
+      throw new Error('AI analysis is temporarily unavailable. It will be retried automatically.');
+    }
+    const data = await res.json();
+    const used = data.usage?.total_tokens ?? 4000;
+    // Pace the next request so the rolling one-minute token budget is not exceeded.
+    await sleep(Math.ceil((used / TPM_BUDGET) * 60000));
+    return parseJson(data.choices?.[0]?.message?.content || '');
+  }
+  throw new Error('AI analysis is busy right now. It will be retried automatically.');
 }
 
 async function callGemini(prompt) {
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
+  const res = await withRetry('gemini', () => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
     }),
-    signal: AbortSignal.timeout(120000),
-  });
-  if (!res.ok) {
-    console.error('gemini http', res.status);
-    throw new Error('AI analysis is temporarily unavailable. It will be retried automatically.');
-  }
+    signal: AbortSignal.timeout(180000),
+  }));
   const data = await res.json();
   return parseJson((data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join(''));
 }
@@ -239,7 +274,11 @@ async function analyseChunked(meeting, sector, segments) {
   if (parts.length === 1) return runModel(meeting, sector, parts[0]);
 
   const partials = [];
-  for (const part of parts) partials.push(await runModel(meeting, sector, part));
+  for (const [i, part] of parts.entries()) {
+    // Pause between parts so the free tier's per-minute limit is not hit repeatedly.
+    if (i > 0 && activeProvider() !== 'mock') await sleep(4000);
+    partials.push(await runModel(meeting, sector, part));
+  }
   const merged = mergePartials(partials, sector);
 
   if (activeProvider() !== 'mock') {
