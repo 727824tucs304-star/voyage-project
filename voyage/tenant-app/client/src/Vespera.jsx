@@ -453,6 +453,12 @@ export function MeetingDetailPage() {
     } catch (e) { setErr(e.message); }
   };
 
+  const removeRecording = async (r) => {
+    if (!window.confirm(`Remove "${r.original_name}"? Its transcript, summary and AI-suggested tasks will be cleared. Tasks you added are kept.`)) return;
+    setErr('');
+    try { await api('DELETE', `/meetings/${id}/recordings/${r.id}`); load(); } catch (e) { setErr(e.message); }
+  };
+
   const retry = async () => {
     setErr('');
     try { await api('POST', `/meetings/${id}/retry`); load(); } catch (e) { setErr(e.message); }
@@ -566,7 +572,7 @@ export function MeetingDetailPage() {
               {m.recordings.map((r) => (
                 <li key={r.id} className="flex items-center justify-between py-2 text-sm">
                   <span>{r.original_name} <span className="text-slate-500">· {sizeText(r.bytes)}</span></span>
-                  <Button variant="ghost" onClick={() => download(r)}><Download className="h-4 w-4" />Download</Button>
+                  <div className="flex gap-2"><Button variant="ghost" onClick={() => download(r)}><Download className="h-4 w-4" />Download</Button><Button variant="ghost" onClick={() => removeRecording(r)}><Trash2 className="h-4 w-4" />Remove</Button></div>
                 </li>))}
             </ul>)}
         </Card>

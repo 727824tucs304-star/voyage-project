@@ -261,6 +261,38 @@ meetingsRouter.post('/meetings/:id/recording', async (req, res, next) => {
   }
 });
 
+// Removes a wrong or unwanted recording. Its transcript, summary and AI-suggested tasks are cleared,
+// because they came from that file. Tasks you added yourself are kept.
+meetingsRouter.delete('/meetings/:id/recordings/:rid', wrap(async (req, res) => {
+  const id = idOf(req);
+  const rid = Number(req.params.rid);
+  await requireMeeting(id);
+  const { rowCount: active } = await pool.query(`SELECT 1 FROM processing_jobs WHERE meeting_id = $1 AND state IN ${ACTIVE}`, [id]);
+  if (active) throw new HttpError(409, 'Wait for the current processing to finish before removing a recording.');
+  const { rows: [rec] } = await pool.query('SELECT storage_key FROM recordings WHERE id = $1 AND meeting_id = $2', [rid, id]);
+  if (!rec) throw new HttpError(404, 'Recording not found');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM recordings WHERE id = $1', [rid]);
+    await client.query('DELETE FROM transcript_segments WHERE meeting_id = $1', [id]);
+    await client.query('DELETE FROM meeting_analysis WHERE meeting_id = $1', [id]);
+    await client.query("DELETE FROM action_items WHERE meeting_id = $1 AND origin = 'ai'", [id]);
+    await client.query('DELETE FROM processing_jobs WHERE meeting_id = $1', [id]);
+    const { rows: [left] } = await client.query('SELECT COUNT(*)::int AS n FROM recordings WHERE meeting_id = $1', [id]);
+    if (left.n > 0) await client.query("INSERT INTO processing_jobs (meeting_id, state) VALUES ($1, 'queued')", [id]);
+    await client.query('UPDATE meetings SET status = $2 WHERE id = $1', [id, left.n > 0 ? 'queued' : 'draft']);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+  try { fs.rmSync(recordingPath(rec.storage_key), { force: true }); } catch { /* file already gone */ }
+  res.status(204).end();
+}));
+
 // Printable report. The browser's Print dialog saves it as PDF; the Word download is the same report.
 meetingsRouter.get('/meetings/:id/report.html', wrap(async (req, res) => {
   const html = await buildReport(idOf(req));

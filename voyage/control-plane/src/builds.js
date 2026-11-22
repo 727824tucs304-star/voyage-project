@@ -86,6 +86,14 @@ export async function buildFor(version, product = 'vespera') {
   return rows[0] || null;
 }
 
+// A commit that already has a successful or running build for this product.
+export async function existingBuildFor(sha, product = 'vespera') {
+  const { rows } = await db.query(
+    "SELECT version, status FROM builds WHERE product = $1 AND commit_hash = $2 AND status IN ('succeeded','running') ORDER BY id DESC LIMIT 1",
+    [product, sha]);
+  return rows[0] || null;
+}
+
 // Release note values passed into a tenant container at creation.
 export async function releaseInfo(version, product = 'vespera') {
   const b = await buildFor(version, product);

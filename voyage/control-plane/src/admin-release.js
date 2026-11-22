@@ -3,7 +3,7 @@ import { db } from './db.js';
 import { getTenant } from './provision.js';
 import { listCommits, getCommit, compare } from './github.js';
 import { startRelease, releaseStatus, history, deployRecorded } from './deploy-history.js';
-import { startBuildForCommit, listBuilds } from './builds.js';
+import { startBuildForCommit, listBuilds, existingBuildFor } from './builds.js';
 import { isSha } from './git.js';
 import { HttpError } from './errors.js';
 import { SLUG_RE, VERSION_RE } from './security.js';
@@ -70,6 +70,10 @@ releaseRouter.post('/products/vespera/build', wrap(async (req, res) => {
   const sha = String(req.body?.sha || '');
   if (!isSha(sha)) throw new HttpError(400, 'sha must be a 40-character commit id');
   if (!(await listCommits(100)).some((c) => c.sha === sha)) throw new HttpError(422, 'That commit is not on the configured branch');
+  const existing = await existingBuildFor(sha, 'vespera');
+  if (existing) {
+    throw new HttpError(409, `This commit is already built as ${String(existing.version).toUpperCase()}. Make a new commit to build a new release.`);
+  }
   const meta = await getCommit(sha);
   res.status(202).json(await startBuildForCommit(meta, 'vespera'));
 }));
