@@ -187,7 +187,7 @@ async function admin() {
         <button data-action="build-release">Build ${esc(String(releases.next).toUpperCase())} from latest commit</button>
       </div>
       <p id="amsg" class="muted" style="margin:6px 0"></p>
-      <div id="bprog"></div>
+      <div id="bprog">${window.__buildPanel || ''}</div>
       <div style="overflow-x:auto"><table>
         <tr><th>Customer</th><th>Domain</th><th>Database</th><th>Container</th><th>Product · release</th><th>Status</th><th>Actions</th></tr>
         ${rows.join('') || '<tr><td colspan="7" class="muted">No customers yet.</td></tr>'}
@@ -549,20 +549,32 @@ function progressHtml(b) {
   const errorText = failed ? `<pre style="white-space:pre-wrap;font-size:12px;background:#fef2f2;padding:8px;border-radius:6px">${esc(b.log_tail || 'The build failed. See the server log.')}</pre>` : '';
   return `<div class="card" style="margin:8px 0"><strong>Vespera ${esc(String(b.version).toUpperCase())} · ${title}</strong>${bar}<ul style="list-style:none;padding:0;margin:6px 0;font-size:14px">${steps}</ul>${errorText}</div>`;
 }
+var buildWatching = false;
 async function watchBuild(id) {
+  if (buildWatching) return;
+  buildWatching = true;
+  let attempts = 0;
   const tick = async () => {
     try {
       const builds = await A('GET', '/api/admin/products/vespera/builds');
-      const b = builds.find((x) => x.id === id);
-      const box = document.getElementById('bprog');
-      if (b && box) box.innerHTML = progressHtml(b);
-      if (!b || b.status === 'running') return setTimeout(tick, 3000);
+      const b = id ? builds.find((x) => x.id === id) : builds.find((x) => x.status === 'running');
+      if (b) {
+        window.__buildPanel = progressHtml(b);
+        const box = document.getElementById('bprog');
+        if (box) box.innerHTML = window.__buildPanel;
+        if (b.status === 'running') return setTimeout(tick, 3000);
+      } else if (id && attempts++ < 40) {
+        return setTimeout(tick, 3000);
+      }
+      buildWatching = false;
     } catch (e) {
-      return setTimeout(tick, 5000);
+      buildWatching = false;
     }
   };
   tick();
 }
+// Resume showing a build that is still running after the page was reloaded.
+window.addEventListener('load', () => watchBuild(null));
 
 function route() {
   clearTimeout(timer);
