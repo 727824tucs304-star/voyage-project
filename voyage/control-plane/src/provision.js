@@ -111,6 +111,9 @@ async function ensureContainer(t, version, { force = false, product = t.product 
   if (process.env.TRANSCRIBE_BUCKET) env.push(`TRANSCRIBE_BUCKET=${process.env.TRANSCRIBE_BUCKET}`);
   if (process.env.TRANSCRIPTION_MOCK_DELAY_MS) env.push(`TRANSCRIPTION_MOCK_DELAY_MS=${process.env.TRANSCRIPTION_MOCK_DELAY_MS}`);
 
+  // AI analysis settings. Groq is preferred when its key is set; Gemini is the fallback.
+  if (process.env.GROQ_API_KEY) env.push(`GROQ_API_KEY=${process.env.GROQ_API_KEY}`);
+  if (process.env.GROQ_MODEL) env.push(`GROQ_MODEL=${process.env.GROQ_MODEL}`);
   if (process.env.GEMINI_API_KEY) env.push(`GEMINI_API_KEY=${process.env.GEMINI_API_KEY}`);
   if (process.env.GEMINI_MODEL) env.push(`GEMINI_MODEL=${process.env.GEMINI_MODEL}`);
   if (process.env.AI_PROVIDER) env.push(`AI_PROVIDER=${process.env.AI_PROVIDER}`);

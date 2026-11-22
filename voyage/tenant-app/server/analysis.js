@@ -1,14 +1,48 @@
 import { pool } from './db.js';
 
-// AI analysis. Uses Google Gemini (free tier) when GEMINI_API_KEY is set.
+// AI analysis. Uses Groq (free, no card) when GROQ_API_KEY is set, otherwise Google Gemini.
 // AI_PROVIDER=mock exists only for automated tests and is labelled as such.
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-export const aiConfigured = () => process.env.AI_PROVIDER === 'mock' || Boolean(process.env.GEMINI_API_KEY);
-const provider = () => (process.env.AI_PROVIDER === 'mock' ? 'Test provider (mock)' : 'Google Gemini');
+const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+
+function activeProvider() {
+  if (process.env.AI_PROVIDER === 'mock') return 'mock';
+  if (process.env.GROQ_API_KEY) return 'groq';
+  if (process.env.GEMINI_API_KEY) return 'gemini';
+  return null;
+}
+export const aiConfigured = () => activeProvider() !== null;
+const providerLabel = () => ({ mock: 'Test provider (mock)', groq: 'Groq', gemini: 'Google Gemini' })[activeProvider()] || 'Not configured';
+const modelName = () => ({ groq: GROQ_MODEL, gemini: GEMINI_MODEL })[activeProvider()] || 'mock';
 const clock = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
+function parseJson(text) {
+  try {
+    return JSON.parse(text.replace(/^```json\s*|```\s*$/g, '').trim());
+  } catch {
+    throw new Error('The AI reply was not valid JSON. The job will be retried.');
+  }
+}
+
+async function callGroq(prompt) {
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
+      temperature: 0.1,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!res.ok) throw new Error(`Groq returned HTTP ${res.status}. Check GROQ_API_KEY.`);
+  const data = await res.json();
+  return parseJson(data.choices?.[0]?.message?.content || '');
+}
+
 async function callGemini(prompt) {
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
     body: JSON.stringify({
@@ -17,14 +51,9 @@ async function callGemini(prompt) {
     }),
     signal: AbortSignal.timeout(120000),
   });
-  if (!res.ok) throw new Error(`Gemini returned HTTP ${res.status}. Check GEMINI_API_KEY and the model name.`);
+  if (!res.ok) throw new Error(`Gemini returned HTTP ${res.status}. Check GEMINI_API_KEY.`);
   const data = await res.json();
-  const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('');
-  try {
-    return JSON.parse(text.replace(/^```json\s*|```\s*$/g, '').trim());
-  } catch {
-    throw new Error('The AI reply was not valid JSON. The job will be retried.');
-  }
+  return parseJson((data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join(''));
 }
 
 function mockOutput() {
@@ -115,8 +144,7 @@ export async function saveAnalysis(meetingId, meeting, segments, rawOut) {
          legal = EXCLUDED.legal, provider = EXCLUDED.provider, model = EXCLUDED.model, created_at = now()`,
       [meetingId, v.executive_summary, v.detailed_summary, JSON.stringify(withTime(v.key_points)),
         JSON.stringify(withTime(v.decisions)), JSON.stringify(v.follow_ups), JSON.stringify(v.open_questions),
-        JSON.stringify(v.risks), v.legal ? JSON.stringify(v.legal) : null, provider(),
-        process.env.AI_PROVIDER === 'mock' ? 'mock' : MODEL]);
+        JSON.stringify(v.risks), v.legal ? JSON.stringify(v.legal) : null, providerLabel(), modelName()]);
     await client.query("DELETE FROM action_items WHERE meeting_id = $1 AND origin = 'ai'", [meetingId]);
     for (const a of v.action_items) {
       const t = at(a.source_seq);
@@ -139,8 +167,10 @@ export async function analyse(meetingId) {
   const { rows: segments } = await pool.query(
     'SELECT seq, speaker, start_sec, end_sec, text FROM transcript_segments WHERE meeting_id = $1 ORDER BY seq', [meetingId]);
   if (!segments.length) throw new Error('No transcript is stored for this meeting.');
-  const out = process.env.AI_PROVIDER === 'mock'
-    ? mockOutput()
-    : await callGemini(prompt(meeting, segments));
+  const kind = activeProvider();
+  const text = prompt(meeting, segments);
+  const out = kind === 'mock' ? mockOutput()
+    : kind === 'groq' ? await callGroq(text)
+    : await callGemini(text);
   await saveAnalysis(meetingId, meeting, segments, out);
 }
