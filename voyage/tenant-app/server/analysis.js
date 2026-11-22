@@ -86,7 +86,7 @@ function parseJson(text) {
   try {
     return JSON.parse(text.replace(/^```json\s*|```\s*$/g, '').trim());
   } catch {
-    throw new Error('The AI reply was not valid JSON. The job will be retried.');
+    throw new Error('The AI reply could not be read. It will be retried automatically.');
   }
 }
 
@@ -102,7 +102,10 @@ async function callGroq(prompt) {
     }),
     signal: AbortSignal.timeout(120000),
   });
-  if (!res.ok) throw new Error(`Groq returned HTTP ${res.status}. Check GROQ_API_KEY and GROQ_MODEL.`);
+  if (!res.ok) {
+    console.error('groq http', res.status);
+    throw new Error('AI analysis is temporarily unavailable. It will be retried automatically.');
+  }
   const data = await res.json();
   return parseJson(data.choices?.[0]?.message?.content || '');
 }
@@ -117,7 +120,10 @@ async function callGemini(prompt) {
     }),
     signal: AbortSignal.timeout(120000),
   });
-  if (!res.ok) throw new Error(`Gemini returned HTTP ${res.status}. Check GEMINI_API_KEY.`);
+  if (!res.ok) {
+    console.error('gemini http', res.status);
+    throw new Error('AI analysis is temporarily unavailable. It will be retried automatically.');
+  }
   const data = await res.json();
   return parseJson((data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join(''));
 }
@@ -171,6 +177,7 @@ function buildPrompt(meeting, sector, segs) {
 Rules:
 - Use only information stated in the transcript. Never invent people, facts, dates, deadlines, figures or conclusions.
 - source_seq, seq_a and seq_b must be bracketed numbers from the transcript below.
+- Never mention segment numbers or brackets in any text field.
 - owner, due, budget, deadlines, decision_makers and medications_stated must be copied word for word from the transcript, or left null or empty.
 - possible_conflicts: only pairs of statements that appear to contradict each other, with both segment numbers. Do not decide which one is correct.
 - review_notes: points a professional should verify before relying on this output.
@@ -255,7 +262,7 @@ function validate(out, segments, sector) {
   const seq = (n) => (seqs.has(Number(n)) ? Number(n) : null);
   const txt = (v, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
   const grounded = (v) => (typeof v === 'string' && v.trim() && haystack.includes(v.trim().toLowerCase()) ? v.trim().slice(0, 120) : null);
-  const strings = (arr) => [...new Set((Array.isArray(arr) ? arr : []).map((x) => txt(x)).filter(Boolean))].slice(0, 50);
+  const strings = (arr) => [...new Set((Array.isArray(arr) ? arr : []).map((x) => txt(x).replace(/\s*(after|in|at|from)?\s*segment\s*\[?\d+\]?/gi, '').replace(/\s*\[\d+\]/g, '').trim()).filter(Boolean))].slice(0, 50);
   const items = (arr) => (Array.isArray(arr) ? arr : []).map((x) => ({ text: txt(x?.text), source_seq: seq(x?.source_seq) })).filter((x) => x.text).slice(0, 50);
 
   const actions = (Array.isArray(out.action_items) ? out.action_items : []).map((a) => ({

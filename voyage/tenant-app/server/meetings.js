@@ -7,6 +7,7 @@ import { providerStatus } from './providers.js';
 
 export const CATEGORIES = ['legal_intake', 'internal_case', 'client_call', 'board', 'other'];
 export const STATUSES = ['draft', 'uploaded', 'queued', 'transcribing', 'analysing', 'completed', 'failed'];
+export const SECTOR_KEYS = ['legal', 'sales', 'healthcare', 'financial', 'hr', 'general'];
 const ACTIVE = "('queued','transcribing','analysing')";
 
 export const meetingsRouter = Router();
@@ -21,6 +22,13 @@ async function requireMeeting(id) {
   const { rowCount } = await pool.query('SELECT 1 FROM meetings WHERE id = $1', [id]);
   if (!rowCount) throw new HttpError(404, 'Meeting not found');
 }
+const clockOf = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+// Protects against spreadsheet formula injection when a CSV is opened in Excel.
+const csvCell = (v) => {
+  let s = String(v ?? '');
+  if (/^[=+\-@]/.test(s)) s = `'${s}`;
+  return `"${s.replace(/"/g, '""')}"`;
+};
 
 function participants(v) {
   if (v === undefined || v === null || v === '') return [];
@@ -35,6 +43,7 @@ function meetingInput(b) {
     category: oneOf(b, 'category', CATEGORIES, 'other'),
     meeting_date: date(b, 'meeting_date', { required: true }),
     participants: participants(b?.participants),
+    sector: oneOf(b, 'sector', SECTOR_KEYS, null),
   };
 }
 const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -50,6 +59,22 @@ meetingsRouter.get('/meetings/stats', wrap(async (req, res) => {
 }));
 
 meetingsRouter.get('/processing/status', (req, res) => res.json(providerStatus()));
+
+// Search across everything said in the transcripts, plus task descriptions and owners.
+meetingsRouter.get('/search', wrap(async (req, res) => {
+  const q = String(req.query.q || '').trim().slice(0, 100);
+  if (q.length < 2) throw new HttpError(400, 'Enter at least 2 characters.');
+  const pattern = `%${q.replace(/[%_\\]/g, '\\$&')}%`;
+  const { rows: transcript } = await pool.query(
+    `SELECT m.id AS meeting_id, m.title, m.meeting_date, t.seq, t.start_sec, t.text
+     FROM transcript_segments t JOIN meetings m ON m.id = t.meeting_id
+     WHERE t.text ILIKE $1 ORDER BY m.meeting_date DESC, t.seq LIMIT 50`, [pattern]);
+  const { rows: tasks } = await pool.query(
+    `SELECT a.meeting_id, a.id, a.description, a.owner, a.status, m.title, m.meeting_date
+     FROM action_items a JOIN meetings m ON m.id = a.meeting_id
+     WHERE a.description ILIKE $1 OR a.owner ILIKE $1 ORDER BY m.meeting_date DESC, a.id LIMIT 50`, [pattern]);
+  res.json({ transcript, tasks });
+}));
 
 meetingsRouter.get('/meetings', wrap(async (req, res) => {
   const where = [];
@@ -90,9 +115,9 @@ meetingsRouter.get('/meetings', wrap(async (req, res) => {
 meetingsRouter.post('/meetings', wrap(async (req, res) => {
   const i = meetingInput(req.body);
   const { rows } = await pool.query(
-    `INSERT INTO meetings (title, description, category, meeting_date, participants, created_by)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6) RETURNING *`,
-    [i.title, i.description, i.category, i.meeting_date, JSON.stringify(i.participants), who(req)]
+    `INSERT INTO meetings (title, description, category, meeting_date, participants, created_by, sector)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING *`,
+    [i.title, i.description, i.category, i.meeting_date, JSON.stringify(i.participants), who(req), i.sector]
   );
   res.status(201).json(rows[0]);
 }));
@@ -119,9 +144,9 @@ meetingsRouter.put('/meetings/:id', wrap(async (req, res) => {
   await requireMeeting(id);
   const i = meetingInput(req.body);
   const { rows } = await pool.query(
-    `UPDATE meetings SET title = $2, description = $3, category = $4, meeting_date = $5, participants = $6::jsonb
+    `UPDATE meetings SET title = $2, description = $3, category = $4, meeting_date = $5, participants = $6::jsonb, sector = $7
      WHERE id = $1 RETURNING *`,
-    [id, i.title, i.description, i.category, i.meeting_date, JSON.stringify(i.participants)]
+    [id, i.title, i.description, i.category, i.meeting_date, JSON.stringify(i.participants), i.sector]
   );
   res.json(rows[0]);
 }));
@@ -142,6 +167,68 @@ meetingsRouter.post('/meetings/:id/retry', wrap(async (req, res) => {
   if (!rowCount) throw new HttpError(409, 'Only failed processing can be retried.');
   await pool.query("UPDATE meetings SET status = 'queued' WHERE id = $1", [id]);
   res.status(202).json({ id, status: 'queued' });
+}));
+
+// Tasks. AI-suggested tasks can be edited or marked done; re-running the analysis replaces only AI tasks.
+const taskText = (b, key, max) => text(b, key, { max });
+meetingsRouter.post('/meetings/:id/actions', wrap(async (req, res) => {
+  const id = idOf(req);
+  await requireMeeting(id);
+  const description = text(req.body, 'description', { max: 500, required: true });
+  const owner = taskText(req.body, 'owner', 120);
+  const due = taskText(req.body, 'due', 120);
+  const { rows } = await pool.query(
+    `INSERT INTO action_items (meeting_id, description, owner, due_text, origin)
+     VALUES ($1, $2, $3, $4, 'manual')
+     RETURNING id, description, owner, due_text, status, origin, source_seq, source_start`,
+    [id, description, owner, due]);
+  res.status(201).json(rows[0]);
+}));
+
+meetingsRouter.patch('/meetings/:id/actions/:aid', wrap(async (req, res) => {
+  const id = idOf(req);
+  const aid = Number(req.params.aid);
+  if (!Number.isInteger(aid) || aid <= 0) throw new HttpError(404, 'Task not found');
+  const b = req.body || {};
+  const status = b.status === undefined ? null : oneOf(b, 'status', ['open', 'done']);
+  const ownerSet = b.owner !== undefined;
+  const dueSet = b.due !== undefined;
+  const owner = ownerSet ? taskText(b, 'owner', 120) : null;
+  const due = dueSet ? taskText(b, 'due', 120) : null;
+  const { rows } = await pool.query(
+    `UPDATE action_items SET
+       status = COALESCE($3, status),
+       owner = CASE WHEN $4::boolean THEN $5 ELSE owner END,
+       due_text = CASE WHEN $6::boolean THEN $7 ELSE due_text END
+     WHERE id = $1 AND meeting_id = $2
+     RETURNING id, description, owner, due_text, status, origin, source_seq, source_start`,
+    [aid, id, status, ownerSet, owner, dueSet, due]);
+  if (!rows[0]) throw new HttpError(404, 'Task not found');
+  res.json(rows[0]);
+}));
+
+meetingsRouter.delete('/meetings/:id/actions/:aid', wrap(async (req, res) => {
+  const id = idOf(req);
+  const aid = Number(req.params.aid);
+  const { rowCount } = await pool.query(
+    "DELETE FROM action_items WHERE id = $1 AND meeting_id = $2 AND origin = 'manual'", [aid, id]);
+  if (!rowCount) throw new HttpError(409, 'Only tasks added manually can be deleted. Mark AI-suggested tasks as done instead.');
+  res.status(204).end();
+}));
+
+meetingsRouter.get('/meetings/:id/export.csv', wrap(async (req, res) => {
+  const id = idOf(req);
+  await requireMeeting(id);
+  const { rows } = await pool.query(
+    'SELECT description, owner, due_text, status, origin, source_start FROM action_items WHERE meeting_id = $1 ORDER BY id', [id]);
+  const lines = [['task', 'owner', 'deadline', 'status', 'origin', 'timestamp'].map(csvCell).join(',')];
+  for (const r of rows) {
+    lines.push([r.description, r.owner, r.due_text, r.status, r.origin,
+      r.source_start == null ? '' : clockOf(Number(r.source_start))].map(csvCell).join(','));
+  }
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="vespera-tasks-${id}.csv"`);
+  res.send(`\uFEFF${lines.join('\r\n')}`);
 }));
 
 // Raw upload. Requires explicit consent, validates type and size before reading the body, and never runs

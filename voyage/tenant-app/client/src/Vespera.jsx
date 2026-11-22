@@ -114,12 +114,10 @@ export function OverviewPage() {
     ['Meetings processed', stats.processed],
     ['Recording duration', durationText(stats.duration_seconds)],
     ['Pending jobs', stats.pending_jobs],
-    ['Action items', 'Next phase'],
   ] : [];
   return (
     <>
       <Header title="Overview" subtitle="Meetings, processing and recent activity for your organisation." />
-      <ProviderBanner status={prov} />
       {err && <p className="mb-4 text-sm text-red-600">{err}</p>}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         {cards.map(([label, value]) => (
@@ -145,7 +143,7 @@ export function OverviewPage() {
 }
 
 function MeetingForm({ onSaved, onCancel }) {
-  const [form, setForm] = useState({ title: '', description: '', category: 'legal_intake', meeting_date: new Date().toISOString().slice(0, 10), participants: '' });
+  const [form, setForm] = useState({ title: '', description: '', category: 'legal_intake', sector: '', meeting_date: new Date().toISOString().slice(0, 10), participants: '' });
   const [err, setErr] = useState('');
   const save = async (e) => {
     e.preventDefault();
@@ -165,6 +163,10 @@ function MeetingForm({ onSaved, onCancel }) {
           <label className="block text-sm"><span className="mb-1 block font-medium">Meeting date *</span>
             <input className={inputCls} type="date" required value={form.meeting_date} onChange={(e) => setForm({ ...form, meeting_date: e.target.value })} /></label>
         </div>
+        <label className="block text-sm"><span className="mb-1 block font-medium">Workflow</span>
+          <select className={inputCls} value={form.sector} onChange={(e) => setForm({ ...form, sector: e.target.value })}>
+            <option value="">Choose from the category</option>
+            {Object.entries(SECTOR_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
         <label className="block text-sm"><span className="mb-1 block font-medium">Participants</span>
           <input className={inputCls} placeholder="Separate names with commas" value={form.participants} onChange={(e) => setForm({ ...form, participants: e.target.value })} /></label>
         <label className="block text-sm"><span className="mb-1 block font-medium">Description</span>
@@ -176,6 +178,46 @@ function MeetingForm({ onSaved, onCancel }) {
         </div>
       </form>
     </div>
+  );
+}
+
+function SearchPanel() {
+  const navigate = useNavigate();
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState(null);
+  const [err, setErr] = useState('');
+  const run = async (e) => {
+    e.preventDefault();
+    setErr('');
+    try { setResults(await api('GET', `/search?q=${encodeURIComponent(q)}`)); } catch (ex) { setErr(ex.message); }
+  };
+  return (
+    <Card className="mb-4 p-4">
+      <form onSubmit={run} className="flex gap-2">
+        <input className={inputCls} placeholder="Search everything said in your meetings, tasks and owners" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Button type="submit">Search</Button>
+      </form>
+      {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
+      {results && (
+        <div className="mt-3 space-y-2 text-sm">
+          {results.transcript.length === 0 && results.tasks.length === 0 && <p className="text-slate-500">No matches.</p>}
+          {results.transcript.map((r, i) => (
+            <button key={`t${i}`} type="button" onClick={() => navigate(`/meetings/${r.meeting_id}`)} className="block w-full rounded-md p-2 text-left hover:bg-slate-50">
+              <span className="font-medium text-slate-900">{r.title}</span>
+              <span className="text-xs text-slate-500"> · {clock(r.start_sec)} · {dateText(r.meeting_date)}</span>
+              <p className="text-slate-600">{r.text}</p>
+            </button>
+          ))}
+          {results.tasks.map((r) => (
+            <button key={`k${r.id}`} type="button" onClick={() => navigate(`/meetings/${r.meeting_id}`)} className="block w-full rounded-md p-2 text-left hover:bg-slate-50">
+              <span className="text-xs font-medium uppercase text-violet-700">Task</span>
+              <span className="ml-2 text-slate-900">{r.description}</span>
+              <span className="text-xs text-slate-500"> · {r.title}{r.owner ? ` · Owner: ${r.owner}` : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -198,6 +240,7 @@ export function MeetingsPage() {
       <Header title="Meetings" subtitle="Record, search and review every meeting in one place.">
         <Button onClick={() => setCreating(true)}><Plus className="h-4 w-4" />New meeting</Button>
       </Header>
+      <SearchPanel />
       <Card className="mb-2 grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-6">
         <label className="relative block sm:col-span-2">
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
@@ -252,6 +295,63 @@ export function MeetingsPage() {
       </Card>
       {creating && <MeetingForm onCancel={() => setCreating(false)} onSaved={(m) => navigate(`/meetings/${m.id}`)} />}
     </>
+  );
+}
+
+function TasksCard({ meetingId, tasks, onChange, onError }) {
+  const [draft, setDraft] = useState({ description: '', owner: '', due: '' });
+  const [busy, setBusy] = useState(false);
+  const patch = async (t, body) => {
+    try { await api('PATCH', `/meetings/${meetingId}/actions/${t.id}`, body); onChange(); } catch (e) { onError(e.message); }
+  };
+  const add = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api('POST', `/meetings/${meetingId}/actions`, draft);
+      setDraft({ description: '', owner: '', due: '' });
+      onChange();
+    } catch (ex) { onError(ex.message); } finally { setBusy(false); }
+  };
+  const remove = async (t) => {
+    if (!window.confirm('Delete this task?')) return;
+    try { await api('DELETE', `/meetings/${meetingId}/actions/${t.id}`); onChange(); } catch (e) { onError(e.message); }
+  };
+  return (
+    <Card className="p-5 lg:col-span-2">
+      <h2 className="mb-1 font-medium text-slate-900">Tasks</h2>
+      <p className="mb-4 text-xs text-slate-500">Suggested tasks show the moment in the recording they came from. Check owners and deadlines before acting.</p>
+      {tasks.length === 0 ? <p className="text-sm text-slate-400">No tasks yet.</p> : (
+        <ul className="divide-y divide-slate-100 text-sm">
+          {tasks.map((t) => (
+            <li key={t.id} className="flex flex-wrap items-start gap-3 py-3">
+              <input type="checkbox" className="mt-1" aria-label="Mark done" checked={t.status === 'done'}
+                onChange={(e) => patch(t, { status: e.target.checked ? 'done' : 'open' })} />
+              <div className="min-w-0 flex-1">
+                <div className={t.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-800'}>
+                  {t.description}<TimeChip sec={t.source_start} seq={t.source_seq} />
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                  <label>Owner <input className="ml-1 rounded border border-slate-300 px-2 py-0.5" defaultValue={t.owner || ''}
+                    onBlur={(e) => e.target.value.trim() !== (t.owner || '') && patch(t, { owner: e.target.value.trim() })} /></label>
+                  <label>Deadline <input className="ml-1 rounded border border-slate-300 px-2 py-0.5" defaultValue={t.due_text || ''}
+                    onBlur={(e) => e.target.value.trim() !== (t.due_text || '') && patch(t, { due: e.target.value.trim() })} /></label>
+                  <span>{t.origin === 'ai' ? 'Suggested' : 'Added by you'}</span>
+                </div>
+              </div>
+              {t.origin === 'manual' && <button type="button" onClick={() => remove(t)} className="text-xs text-red-600 hover:underline">Delete</button>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <form onSubmit={add} className="mt-4 grid gap-2 border-t border-slate-100 pt-4 sm:grid-cols-4">
+        <input className={`${inputCls} sm:col-span-2`} required placeholder="New task" value={draft.description}
+          onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
+        <input className={inputCls} placeholder="Owner" value={draft.owner} onChange={(e) => setDraft({ ...draft, owner: e.target.value })} />
+        <input className={inputCls} placeholder="Deadline" value={draft.due} onChange={(e) => setDraft({ ...draft, due: e.target.value })} />
+        <div className="flex justify-end sm:col-span-4"><Button type="submit" disabled={busy}>Add task</Button></div>
+      </form>
+    </Card>
   );
 }
 
@@ -317,6 +417,15 @@ export function MeetingDetailPage() {
     try { await api('DELETE', `/meetings/${id}`); navigate('/meetings'); } catch (e) { setErr(e.message); }
   };
 
+  const exportCsv = async () => {
+    const res = await fetch(`/api/meetings/${id}/export.csv`, { headers: { Authorization: `Bearer ${session.get()}` } });
+    if (!res.ok) return setErr('The export could not be created.');
+    const url = URL.createObjectURL(await res.blob());
+    const a = Object.assign(document.createElement('a'), { href: url, download: `vespera-tasks-${id}.csv` });
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const retry = async () => {
     setErr('');
     try { await api('POST', `/meetings/${id}/retry`); load(); } catch (e) { setErr(e.message); }
@@ -346,6 +455,7 @@ export function MeetingDetailPage() {
       <Link to="/meetings" className="mb-4 inline-block text-sm text-violet-700">← All meetings</Link>
       <Header title={m.title} subtitle={`${dateText(m.meeting_date)} · ${CATEGORY[m.category]}`}>
         <Pill status={m.status} />
+        {(m.action_items || []).length > 0 && <Button variant="ghost" onClick={exportCsv}><Download className="h-4 w-4" />Export tasks (CSV)</Button>}
       </Header>
       {err && <p className="mb-4 text-sm text-red-600">{err}</p>}
       <div className="grid max-w-5xl gap-5 lg:grid-cols-2">
@@ -395,21 +505,6 @@ export function MeetingDetailPage() {
               <ul className="space-y-1 text-sm text-slate-700">{(a.decisions || []).map((d, i) => <li key={i}>{d.text}<TimeChip sec={d.start_sec} seq={d.source_seq} /></li>)}</ul>
               {!(a.decisions || []).length && <p className="text-sm text-slate-400">No decisions stated.</p>}
             </Block>
-            <Block title="Action items">
-              {(m.action_items || []).length === 0 ? <p className="text-sm text-slate-400">No action items stated.</p> : (
-                <ul className="divide-y divide-slate-100 text-sm">
-                  {m.action_items.map((item) => (
-                    <li key={item.id} className="py-2">
-                      <span className="text-slate-800">{item.description}</span>
-                      <TimeChip sec={item.source_start} seq={item.source_seq} />
-                      <div className="mt-0.5 text-xs text-slate-500">
-                        Owner: {item.owner || 'not stated'} · Deadline: {item.due_text || 'not stated'}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Block>
             <Block title="Possible conflicts (check both statements)">
               {(a.flags || []).length === 0 ? <p className="text-sm text-slate-400">None flagged.</p> : (
                 <ul className="space-y-2 text-sm text-slate-700">
@@ -426,6 +521,7 @@ export function MeetingDetailPage() {
             <Block title="Points for professional review"><Bullets items={a.review_notes} /></Block>
           </Card>
         )}
+        <TasksCard meetingId={m.id} tasks={m.action_items || []} onChange={load} onError={setErr} />
         <Card className="p-5 lg:col-span-2">
           <h2 className="mb-3 font-medium text-slate-900">Recording</h2>
           <label className="mb-3 flex items-start gap-2 rounded-md bg-violet-50 p-3 text-sm text-slate-700">
