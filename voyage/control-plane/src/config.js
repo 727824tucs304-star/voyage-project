@@ -6,8 +6,9 @@ const need = (name) => {
 
 const controlSecret = need('CONTROL_SECRET');
 if (controlSecret.length < 32) throw new Error('CONTROL_SECRET must be at least 32 characters');
-const adminToken = need('ADMIN_TOKEN');
-if (adminToken.length < 24) throw new Error('ADMIN_TOKEN must be at least 24 characters');
+// The shared token is optional. Once personal admin accounts are in use, unset ADMIN_TOKEN to retire it.
+const adminToken = process.env.ADMIN_TOKEN || '';
+if (adminToken && adminToken.length < 24) throw new Error('ADMIN_TOKEN must be at least 24 characters, or unset it');
 const baseDomain = need('BASE_DOMAIN').toLowerCase();
 if (!/^[a-z0-9.-]+$/.test(baseDomain)) throw new Error('BASE_DOMAIN must be a plain domain name');
 const githubRepo = process.env.GITHUB_REPO || '';
@@ -25,6 +26,10 @@ export const config = {
   controlDbUrl: need('CONTROL_DB_URL'),
   controlSecret,
   adminToken,
+  registerLimitPerHour: Number(process.env.REGISTER_LIMIT_PER_HOUR || 5),
+  loginLimitPer15Min: Number(process.env.LOGIN_LIMIT_PER_15_MIN || 10),
+  // Number of proxies in front of the control plane. nginx adds X-Forwarded-For, so the default is 1.
+  trustProxy: Number(process.env.TRUST_PROXY || 1),
   tenantPgHost: process.env.TENANT_PG_HOST || 'voyage-postgres',
   tenantPgPort: Number(process.env.TENANT_PG_PORT || 5432),
   dockerSocket: process.env.DOCKER_SOCKET || '/var/run/docker.sock',

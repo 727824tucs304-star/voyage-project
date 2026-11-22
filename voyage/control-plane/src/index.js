@@ -11,10 +11,12 @@ import { deployRecorded } from './deploy-history.js';
 import { resumeBuilds, nextVersion } from './builds.js';
 import { billingRouter, runBillingJobs } from './admin-billing.js';
 import { archiveTenant, restoreTenant } from './lifecycle.js';
+import { requireAdmin, login, logout, limiter } from './admin-auth.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.disable('x-powered-by');
+app.set('trust proxy', config.trustProxy);
 app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(here, '..', 'public')));
 
@@ -33,17 +35,10 @@ const slugParam = (req) => {
   return req.params.slug;
 };
 
-const requireAdmin = (req, res, next) => {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!token || !safeEqual(token, config.adminToken)) return res.status(401).json({ error: 'Admin token required' });
-  return next();
-};
-
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 // ---- Registration and status (public) ----
-app.post('/api/register', wrap(async (req, res) => {
+app.post('/api/register', limiter({ name: 'register', max: config.registerLimitPerHour, windowMs: 3600000 }), wrap(async (req, res) => {
   const b = req.body || {};
   const companyName = clean(b.companyName, 'companyName', 2, 80);
   const adminName = clean(b.adminName, 'adminName', 2, 80);
@@ -67,7 +62,21 @@ app.post('/api/tenants/:slug/retry', wrap(async (req, res) => {
   res.status(202).json(await P.retryProvisioning(slugParam(req)));
 }));
 
-// ---- Administration (admin token required) ----
+// ---- Admin sign-in (personal accounts) ----
+app.post('/api/admin/login', limiter({ name: 'login', max: config.loginLimitPer15Min, windowMs: 900000 }), wrap(async (req, res) => {
+  const b = req.body || {};
+  const email = clean(b.email, 'email', 3, 120).toLowerCase();
+  if (!EMAIL_RE.test(email)) throw new HttpError(400, 'email is not valid');
+  if (typeof b.password !== 'string' || !b.password) throw new HttpError(400, 'password is required');
+  res.json(await login(email, b.password));
+}));
+app.post('/api/admin/logout', wrap(async (req, res) => {
+  await logout(req);
+  res.status(204).end();
+}));
+app.get('/api/admin/me', requireAdmin, (req, res) => res.json({ email: req.admin.email, name: req.admin.name }));
+
+// ---- Administration (signed-in admin required) ----
 app.get('/api/admin/versions', requireAdmin, wrap(async (req, res) => {
   const product = req.query.product === 'voyage' ? 'voyage' : 'vespera';
   res.json({ product, versions: await P.listVersions(product), next: await nextVersion(product) });
