@@ -8,7 +8,7 @@ export function tenantConf(host, containerName) {
 server {
     listen 80;
     server_name ${host};
-        client_max_body_size 600m;
+    client_max_body_size 5m;
 
     location / {
         resolver 127.0.0.11 valid=10s ipv6=off;

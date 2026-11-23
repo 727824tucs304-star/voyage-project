@@ -83,6 +83,7 @@ const control = spawn(process.execPath, ['src/index.js'], {
     TENANT_PG_PORT: '5432',
     CONTROL_SECRET: crypto.randomBytes(32).toString('hex'),
     ADMIN_TOKEN,
+    REGISTER_LIMIT_PER_HOUR: '1000',
     DOCKER_SOCKET: SOCK,
     DOCKER_NETWORK: 'voyage-net',
     TENANT_IMAGE_REPO: 'voyage-tenant',
@@ -800,7 +801,7 @@ await check('a meeting is created with category, date and participants', async (
 });
 await check('meeting input is validated', async () => {
   assert.equal((await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { category: 'legal_intake', meeting_date: '2099-03-02' } })).status, 400);
-  assert.equal((await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: 'x', category: 'healthcare', meeting_date: '2099-03-02' } })).status, 400);
+  assert.equal((await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: 'x', category: 'astrology', meeting_date: '2099-03-02' } })).status, 400);
 });
 await check('uploads reject unsupported files and uploads without consent', async () => {
   assert.equal((await upload(acmeSlug(), meetingId, 'setup.exe', 'application/octet-stream', MP3, true, acme())).status, 415);
@@ -975,6 +976,180 @@ await check('the Analysis is reported as a test-only provider, and the stats cou
   assert.equal(p.ai.provider, 'Test provider (mock)');
   const s = (await tenantApi(acmeSlug(), 'GET', '/meetings/stats', { token: acme() })).data;
   assert.ok(s.processed >= 1);
+});
+
+console.log('\n[16] Tasks, search and workflow selection');
+let taskMeeting = null;
+await check('an AI-suggested task can be marked done, and the change is saved', async () => {
+  const detail = (await tenantApi(acmeSlug(), 'GET', `/meetings/${transcriptMeeting}`, { token: acme() })).data;
+  const aiTask = detail.action_items.find((i) => i.origin === 'ai');
+  assert.ok(aiTask, 'an AI task exists');
+  const res = await tenantApi(acmeSlug(), 'PATCH', `/meetings/${transcriptMeeting}/actions/${aiTask.id}`, { token: acme(), body: { status: 'done' } });
+  assert.equal(res.status, 200);
+  const after = (await tenantApi(acmeSlug(), 'GET', `/meetings/${transcriptMeeting}`, { token: acme() })).data;
+  assert.equal(after.action_items.find((i) => i.id === aiTask.id).status, 'done');
+});
+await check('a manual task can be added and deleted, and AI tasks cannot be deleted', async () => {
+  const added = await tenantApi(acmeSlug(), 'POST', `/meetings/${transcriptMeeting}/actions`, { token: acme(), body: { description: 'Call the client', owner: 'Priya', due: 'Friday' } });
+  assert.equal(added.status, 201);
+  assert.equal(added.data.origin, 'manual');
+  const del = await tenantApi(acmeSlug(), 'DELETE', `/meetings/${transcriptMeeting}/actions/${added.data.id}`, { token: acme() });
+  assert.equal(del.status, 204);
+  const detail = (await tenantApi(acmeSlug(), 'GET', `/meetings/${transcriptMeeting}`, { token: acme() })).data;
+  const aiTask = detail.action_items.find((i) => i.origin === 'ai');
+  const refused = await tenantApi(acmeSlug(), 'DELETE', `/meetings/${transcriptMeeting}/actions/${aiTask.id}`, { token: acme() });
+  assert.equal(refused.status, 409);
+});
+await check('search finds words said in a transcript, and rejects a one-letter query', async () => {
+  const detail = (await tenantApi(acmeSlug(), 'GET', `/meetings/${transcriptMeeting}`, { token: acme() })).data;
+  const word = detail.transcript[0].text.split(/\s+/).map((w) => w.replace(/[^a-z]/gi, '')).find((w) => w.length >= 5);
+  const found = await tenantApi(acmeSlug(), 'GET', `/search?q=${encodeURIComponent(word)}`, { token: acme() });
+  assert.equal(found.status, 200);
+  assert.ok(found.data.transcript.length >= 1, `no match for "${word}"`);
+  const short = await tenantApi(acmeSlug(), 'GET', '/search?q=a', { token: acme() });
+  assert.equal(short.status, 400);
+});
+await check('a meeting can be created with a chosen workflow, and an unknown workflow is refused', async () => {
+  const ok = await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: 'Sales discovery', category: 'other', meeting_date: '2026-11-22', sector: 'healthcare' } });
+  assert.equal(ok.status, 201);
+  assert.equal(ok.data.sector, 'healthcare');
+  taskMeeting = ok.data.id;
+  const bad = await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: 'x', category: 'other', meeting_date: '2026-11-22', sector: 'astrology' } });
+  assert.equal(bad.status, 400);
+});
+
+console.log('\n[17] Printable report and Word download');
+async function rawGet(url, token) {
+  const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  return { status: resp.status, type: resp.headers.get('content-type') || '', disp: resp.headers.get('content-disposition') || '', text: await resp.text() };
+}
+await check('the report contains the summary, the review notice and the transcript', async () => {
+  const r0 = await rawGet(`http://voyage-tenant-${acmeSlug()}:3000/api/meetings/${transcriptMeeting}/report.html`, acme());
+  assert.equal(r0.status, 200);
+  assert.ok(r0.type.startsWith('text/html'), r0.type);
+  assert.ok(r0.text.includes('Executive summary'));
+  assert.ok(r0.text.includes('AI-generated draft for professional review'));
+  assert.ok(r0.text.includes('Transcript'));
+});
+await check('text entered by a user is escaped, so it cannot inject markup into the report', async () => {
+  const hostile = '<img src=x onerror=alert(1)>';
+  const made = await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: hostile, category: 'other', meeting_date: '2026-11-22' } });
+  assert.equal(made.status, 201);
+  const r0 = await rawGet(`http://voyage-tenant-${acmeSlug()}:3000/api/meetings/${made.data.id}/report.html`, acme());
+  assert.equal(r0.status, 200);
+  assert.ok(!r0.text.includes('<img src=x'), 'raw markup leaked into the report');
+  assert.ok(r0.text.includes('&lt;img src=x'));
+});
+await check('a meeting without analysis still gives a report, with a clear message', async () => {
+  const r0 = await rawGet(`http://voyage-tenant-${acmeSlug()}:3000/api/meetings/${taskMeeting}/report.html`, acme());
+  assert.equal(r0.status, 200);
+  assert.ok(r0.text.includes('not been completed'));
+});
+await check('the Word download is served as a Word document with a file name', async () => {
+  const r0 = await rawGet(`http://voyage-tenant-${acmeSlug()}:3000/api/meetings/${transcriptMeeting}/report.doc`, acme());
+  assert.equal(r0.status, 200);
+  assert.ok(r0.type.startsWith('application/msword'), r0.type);
+  assert.ok(r0.disp.includes(`vespera-report-${transcriptMeeting}.doc`), r0.disp);
+});
+
+console.log('\n[18] Removing a wrong recording');
+await check('removing a recording clears its transcript and summary, and the meeting returns to draft', async () => {
+  const before = (await tenantApi(acmeSlug(), 'GET', `/meetings/${transcriptMeeting}`, { token: acme() })).data;
+  assert.ok(before.recordings.length >= 1, 'the meeting has a recording to remove');
+  for (const rec of before.recordings) {
+    const del = await tenantApi(acmeSlug(), 'DELETE', `/meetings/${transcriptMeeting}/recordings/${rec.id}`, { token: acme() });
+    assert.equal(del.status, 204);
+  }
+  const after = (await tenantApi(acmeSlug(), 'GET', `/meetings/${transcriptMeeting}`, { token: acme() })).data;
+  assert.equal(after.recordings.length, 0);
+  assert.equal(after.transcript.length, 0);
+  assert.equal(after.analysis, null);
+  assert.equal(after.status, 'draft');
+});
+
+console.log('\n[19] Personal admin accounts and sign-in limits');
+const OPS_EMAIL = 'ops@voyage.test';
+const OPS_PASSWORD = 'correct horse battery';
+await check('a personal admin account can sign in, and the session works until it is signed out', async () => {
+  const bcryptjs = (await import('bcryptjs')).default;
+  await controlDb.query(
+    'INSERT INTO admins (email, name, password_hash) VALUES ($1, $2, $3) ON CONFLICT (email) DO NOTHING',
+    [OPS_EMAIL, 'Ops Admin', await bcryptjs.hash(OPS_PASSWORD, 10)]);
+  const signIn = await ctl('POST', '/api/admin/login', { body: { email: OPS_EMAIL, password: OPS_PASSWORD } });
+  assert.equal(signIn.status, 200);
+  const me = await ctl('GET', '/api/admin/me', { token: signIn.data.token });
+  assert.equal(me.status, 200);
+  assert.equal(me.data.email, OPS_EMAIL);
+  const out = await ctl('POST', '/api/admin/logout', { token: signIn.data.token });
+  assert.equal(out.status, 204);
+  const after = await ctl('GET', '/api/admin/me', { token: signIn.data.token });
+  assert.equal(after.status, 401);
+});
+await check('a wrong password and an unknown email give the same answer', async () => {
+  const wrongPassword = await ctl('POST', '/api/admin/login', { body: { email: OPS_EMAIL, password: 'not the password' } });
+  const unknownEmail = await ctl('POST', '/api/admin/login', { body: { email: 'nobody@voyage.test', password: 'not the password' } });
+  assert.equal(wrongPassword.status, 401);
+  assert.equal(unknownEmail.status, 401);
+  assert.equal(wrongPassword.data.error, unknownEmail.data.error);
+});
+await check('admin routes refuse requests without a valid session', async () => {
+  const none = await ctl('GET', '/api/admin/tenants', {});
+  assert.equal(none.status, 401);
+  const forged = await ctl('GET', '/api/admin/tenants', { token: 'made-up-session-token' });
+  assert.equal(forged.status, 401);
+});
+await check('repeated sign-in attempts from one address are limited', async () => {
+  let limited = false;
+  for (let i = 0; i < 12; i++) {
+    const r = await ctl('POST', '/api/admin/login', { body: { email: OPS_EMAIL, password: 'wrong guess' } });
+    if (r.status === 429) limited = true;
+  }
+  assert.ok(limited, 'expected a 429 after too many attempts');
+});
+
+console.log('\n[20] Healthcare, financial and HR meetings');
+await check('meetings can be created under the new categories, and unknown categories are refused', async () => {
+  for (const category of ['healthcare', 'financial', 'hr']) {
+    const made = await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: `${category} review`, category, meeting_date: '2026-11-22' } });
+    assert.equal(made.status, 201, `${category} should be accepted`);
+    assert.equal(made.data.category, category);
+  }
+  const bad = await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: 'x', category: 'astrology', meeting_date: '2026-11-22' } });
+  assert.equal(bad.status, 400);
+});
+
+console.log('\n[21] Prescriptions');
+await check('the rules explain a rising AWS service and flag a sync problem, with evidence', async () => {
+  const { buildFindings } = await import('../src/prescription-rules.js');
+  const findings = buildFindings({
+    aws: { total: 100, ec2: 80, services: [{ service: 'Amazon Elastic Compute Cloud - Compute', amount: 80 }] },
+    prevAws: { services: [{ service: 'Amazon Elastic Compute Cloud - Compute', amount: 40 }] },
+    unallocated: 0, sync: { status: 'not_configured', message: 'x' }, client: null, fleet: { cpuAvg: null, readyCount: 0 },
+  });
+  assert.ok(findings.some((f) => f.severity === 'high' && f.area === 'Data'));
+  const rise = findings.find((f) => f.title.includes('rose 100%'));
+  assert.ok(rise, 'rise finding exists');
+  assert.ok(rise.evidence.includes('$80.00') && rise.evidence.includes('$40.00'));
+  assert.ok(rise.action.length > 20);
+});
+await check('a customer prescription compares the estimate with its expected budget', async () => {
+  const month = new Date().toISOString().slice(0, 7);
+  const put = await ctl('PUT', `/api/admin/tenants/${acmeSlug()}/budget`, { ...adminOpts, body: { monthly_budget: 1 } });
+  assert.equal(put.status, 200);
+  const rx = await ctl('GET', `/api/admin/prescriptions?month=${month}&slug=${acmeSlug()}`, adminOpts);
+  assert.equal(rx.status, 200);
+  assert.equal(rx.data.client.expectedBudget, 1);
+  assert.ok(rx.data.findings.some((f) => f.area === 'Budget'), 'a budget finding is shown');
+  assert.ok(typeof rx.data.summary === 'string' && rx.data.summary.length > 0);
+  const bad = await ctl('PUT', `/api/admin/tenants/${acmeSlug()}/budget`, { ...adminOpts, body: { monthly_budget: -5 } });
+  assert.equal(bad.status, 400);
+});
+await check('the AWS account view works without choosing a customer, and needs admin sign-in', async () => {
+  const rx = await ctl('GET', '/api/admin/prescriptions?month=2026-11', adminOpts);
+  assert.equal(rx.status, 200);
+  assert.equal(rx.data.client, null);
+  const anon = await ctl('GET', '/api/admin/prescriptions?month=2026-11', {});
+  assert.equal(anon.status, 401);
 });
 
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);

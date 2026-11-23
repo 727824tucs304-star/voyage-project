@@ -31,6 +31,10 @@ jobs:
           npm ci
           npm run build
 
+      - name: Make test helper scripts executable
+        run: |
+          chmod +x voyage/control-plane/test/*.sh voyage/control-plane/test/*.mjs
+
       - name: Run the control-plane test suite (91 checks)
         working-directory: voyage/control-plane
         run: |
