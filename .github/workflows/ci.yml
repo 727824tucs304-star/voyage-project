@@ -1,5 +1,4 @@
-# Runs automatically on every push and pull request.
-# Free for public GitHub repositories. Changes nothing on the AWS server.
+# Runs on every push and pull request. Free for public repositories.
 name: CI
 
 on:
@@ -49,3 +48,28 @@ jobs:
           name: test-log
           path: /tmp/control.log
           if-no-files-found: ignore
+
+  terraform:
+    name: Validate infrastructure code
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Check formatting
+        working-directory: voyage/infra
+        run: terraform fmt -check -recursive
+
+      - name: Initialise without a backend (no AWS access needed)
+        working-directory: voyage/infra
+        run: terraform init -backend=false
+
+      - name: Validate configuration
+        working-directory: voyage/infra
+        run: terraform validate
