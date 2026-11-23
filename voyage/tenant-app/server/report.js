@@ -26,21 +26,23 @@ const list = (items) => (items?.length
 const section = (title, body) => `<section><h2>${esc(title)}</h2>${body}</section>`;
 
 const STYLE = `
-body{font-family:Arial,Helvetica,sans-serif;color:#1e293b;max-width:800px;margin:24px auto;padding:0 20px;font-size:11pt;line-height:1.45}
-h1{font-size:20pt;margin:0 0 4px}
-h2{font-size:13pt;border-bottom:1px solid #cbd5e1;padding-bottom:4px;margin:22px 0 8px;color:#4c1d95;page-break-after:avoid}
-.meta{color:#64748b;font-size:10pt}
-.notice{background:#fef3c7;border:1px solid #f59e0b;padding:10px 12px;border-radius:6px;font-size:10pt;margin:16px 0}
-.ts{font-family:Consolas,'Courier New',monospace;color:#6d28d9;font-size:9pt}
-.muted{color:#94a3b8}
-table{width:100%;border-collapse:collapse;font-size:10pt}
-th,td{border:1px solid #e2e8f0;padding:6px;text-align:left;vertical-align:top}
-th{background:#f8fafc}
-li{margin:3px 0}
-p.seg{margin:6px 0;font-size:10pt}
-.sign{margin-top:36px;font-size:10pt}
-@page{margin:18mm}
-@media print{body{margin:0;padding:0;max-width:none}}
+@page { size: A4; margin: 22mm 20mm; }
+body { font-family: Georgia, 'Times New Roman', serif; color: #1f2937; font-size: 11pt; line-height: 1.6; max-width: 170mm; margin: 0 auto; }
+h1 { font-family: Arial, Helvetica, sans-serif; font-size: 18pt; font-weight: 700; color: #1e1b4b; margin: 0 0 6px; padding-bottom: 8px; border-bottom: 2px solid #4c1d95; }
+h2 { font-family: Arial, Helvetica, sans-serif; font-size: 12pt; font-weight: 700; color: #4c1d95; margin: 18px 0 8px; padding-bottom: 3px; border-bottom: 1px solid #d1d5db; page-break-after: avoid; }
+.meta { font-family: Arial, Helvetica, sans-serif; font-size: 9.5pt; color: #475569; line-height: 1.5; margin: 0 0 12px; text-align: left; }
+p, li { text-align: justify; hyphens: auto; }
+ul { margin: 4px 0 8px 18px; padding: 0; }
+li { margin: 3px 0; }
+.notice { font-family: Arial, Helvetica, sans-serif; font-size: 9.5pt; line-height: 1.5; background: #f5f3ff; border-left: 3px solid #6d28d9; padding: 8px 10px; margin: 12px 0 14px; text-align: left; }
+.ts { font-family: 'Courier New', Courier, monospace; color: #6d28d9; font-size: 9pt; }
+.muted { color: #6b7280; }
+table { width: 100%; border-collapse: collapse; font-family: Arial, Helvetica, sans-serif; font-size: 9.5pt; margin: 4px 0 8px; }
+th, td { border-bottom: 1px solid #e5e7eb; padding: 5px 6px; text-align: left; vertical-align: top; }
+th { background: #f3f4f6; color: #374151; font-weight: 700; border-top: 1px solid #d1d5db; }
+p.seg { text-align: left; font-size: 10pt; margin: 5px 0; }
+.sign { font-family: Arial, Helvetica, sans-serif; font-size: 9.5pt; color: #374151; margin-top: 28px; padding-top: 8px; border-top: 1px solid #9ca3af; text-align: left; }
+@media print { body { margin: 0; max-width: none; } }
 `;
 
 export async function buildReport(id) {
@@ -90,7 +92,7 @@ export async function buildReport(id) {
 
   const generated = new Date().toISOString().slice(0, 10);
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>${esc(m.title)}</title><style>${STYLE}</style></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="ProgId" content="Word.Document"><meta name="Generator" content="Vespera"><title>${esc(m.title)}</title><style>${STYLE}</style></head>
 <body>
 <h1>${esc(m.title)}</h1>
 <p class="meta">${esc(dateText(m.meeting_date))} · ${esc(CATEGORY_LABELS[m.category] || m.category)} · Workflow: ${esc(workflow)}<br>Participants: ${esc(participants)}</p>
