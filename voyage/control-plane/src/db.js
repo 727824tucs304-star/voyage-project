@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS admin_sessions_expiry ON admin_sessions (expires_at);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS monthly_budget NUMERIC;
 `;
 
 export const db = new pg.Pool({ connectionString: config.controlDbUrl, max: 10 });

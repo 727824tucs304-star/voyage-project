@@ -64,6 +64,7 @@ function shell(active, html) {
       <a href="#/admin" class="${active === 'tenants' ? 'on' : ''}">Customers</a>
       <a href="#/admin/dev" class="${active === 'dev' ? 'on' : ''}">Deployment Manager</a>
       <a href="#/admin/billing" class="${active === 'billing' ? 'on' : ''}">Usage &amp; Billing</a>
+      <a href="#/admin/prescriptions" class="${active === 'prescriptions' ? 'on' : ''}">Prescriptions</a>
     </nav>
     <div class="main">${html}</div></div>`;
 }
@@ -159,6 +160,86 @@ function signOut() {
     location.hash = '#/admin';
     route();
   });
+}
+
+let rxState = { month: new Date().toISOString().slice(0, 7), slug: '' };
+const SEV = { high: ['High', '#dc2626'], medium: ['Medium', '#d97706'], low: ['Low', '#2563eb'], info: ['Info', '#64748b'] };
+const usd = (n) => `$${Number(n || 0).toFixed(2)}`;
+
+async function prescriptionsPage() {
+  if (!token()) return adminLogin();
+  shell('prescriptions', '<p class="muted">Loading…</p>');
+  try {
+    const q = `month=${encodeURIComponent(rxState.month)}${rxState.slug ? `&slug=${encodeURIComponent(rxState.slug)}` : ''}`;
+    const [tenants, rx] = await Promise.all([A('GET', '/api/admin/tenants'), A('GET', `/api/admin/prescriptions?${q}`)]);
+    renderPrescriptions(tenants, rx);
+  } catch (e) {
+    shell('prescriptions', `<div class="card err">${esc(e.message)}</div>`);
+  }
+}
+
+function findingCard(f) {
+  const [label, colour] = SEV[f.severity] || SEV.info;
+  return `<div class="card">
+    <div class="bar" style="justify-content:space-between"><strong>${esc(f.title)}</strong>
+      <span class="badge" style="background:${colour};color:#fff">${esc(label)} · ${esc(f.area)}</span></div>
+    <p><strong>Why:</strong> ${esc(f.why)}</p>
+    <p><strong>What to do:</strong> ${esc(f.action)}</p>
+    ${f.estimate ? `<p class="muted"><strong>Possible saving:</strong> ${esc(f.estimate)}</p>` : ''}
+    <p class="muted" style="font-size:12px">Evidence: ${esc(f.evidence)}</p></div>`;
+}
+
+function renderPrescriptions(tenants, rx) {
+  const c = rx.client;
+  const sync = rx.aws.sync;
+  shell('prescriptions', `
+    <div class="card bar">
+      <h2 style="margin:0;flex:1">Prescriptions</h2>
+      <label style="margin:0">Month <input id="rxMonth" type="month" value="${esc(rx.month)}" style="width:auto"></label>
+      <label style="margin:0">Customer <select id="rxSlug" style="width:auto">
+        <option value="">AWS account (all customers)</option>
+        ${tenants.map((t) => `<option value="${esc(t.slug)}" ${t.slug === rxState.slug ? 'selected' : ''}>${esc(t.companyName)}</option>`).join('')}</select></label>
+    </div>
+    <p class="muted" style="margin:4px 0 12px">Suggestions come from fixed rules applied to recorded usage and AWS cost data. Each one shows the evidence behind it. Check it in the AWS console before changing anything.</p>
+    ${c ? `<div class="card">
+      <h3 style="margin-top:0">${esc(c.name)}: expected and estimated bill</h3>
+      <div class="bar">
+        <label style="margin:0">Expected monthly budget $ <input id="rxBudget" type="number" min="0" step="any"
+          value="${c.expectedBudget == null ? '' : esc(c.expectedBudget)}" style="width:140px"></label>
+        <button id="rxSave">Save budget</button><span id="rxMsg" class="muted"></span>
+      </div>
+      <table style="margin-top:10px">
+        <tr><td>Estimated bill this month</td><td style="text-align:right"><strong>${usd(c.estimatedBill)}</strong></td></tr>
+        <tr><td>Usage charges</td><td style="text-align:right">${usd(c.usageCharges)}</td></tr>
+        <tr><td>Shared AWS infrastructure (its share)</td><td style="text-align:right">${usd(c.allocatedAws)}</td></tr>
+        <tr><td>Platform fee</td><td style="text-align:right">${usd(c.platformFee)}</td></tr>
+        <tr><td>Difference from expected</td><td style="text-align:right">${c.variance == null
+          ? '<span class="muted">set a budget to compare</span>'
+          : `<strong class="${c.variance > 0 ? 'err' : 'ok'}">${c.variance > 0 ? '+' : ''}${usd(c.variance)}</strong>`}</td></tr>
+      </table></div>` : ''}
+    <div class="card"><h3 style="margin-top:0">Summary</h3><p>${esc(rx.summary)}</p>
+      <p class="muted" style="font-size:13px">AWS account this month: ${usd(rx.aws.total)} · not linked to any customer: ${usd(rx.aws.unallocated)} · ${sync ? `AWS sync: ${esc(sync.status)}` : 'AWS sync has not run yet'}</p></div>
+    <h3>Findings (${rx.findings.length})</h3>
+    ${rx.findings.map(findingCard).join('') || '<div class="card"><p class="ok">No issues found for this month.</p></div>'}
+    <div class="card"><h3 style="margin-top:0">Cost by AWS service</h3>
+      <table><tr><th>Service</th><th>Previous month</th><th>This month</th><th>Change</th></tr>
+      ${rx.services.map((s) => `<tr><td>${esc(s.service)}</td><td>${usd(s.previous)}</td><td>${usd(s.current)}</td>
+        <td>${s.change == null ? '—' : `${s.change >= 0 ? '+' : ''}${Math.round(s.change * 100)}%`}</td></tr>`).join('')
+        || '<tr><td colspan="4" class="muted">No AWS cost data for this month yet.</td></tr>'}
+      </table></div>`);
+
+  document.getElementById('rxMonth').onchange = (e) => { rxState.month = e.target.value; prescriptionsPage(); };
+  document.getElementById('rxSlug').onchange = (e) => { rxState.slug = e.target.value; prescriptionsPage(); };
+  const save = document.getElementById('rxSave');
+  if (save) save.onclick = async () => {
+    const msg = document.getElementById('rxMsg');
+    const raw = document.getElementById('rxBudget').value.trim();
+    try {
+      await A('PUT', `/api/admin/tenants/${encodeURIComponent(c.slug)}/budget`, { monthly_budget: raw === '' ? null : Number(raw) });
+      msg.textContent = 'Saved.'; msg.className = 'ok';
+      setTimeout(prescriptionsPage, 400);
+    } catch (e) { msg.textContent = e.message; msg.className = 'err'; }
+  };
 }
 
 async function admin() {
@@ -601,6 +682,7 @@ function route() {
   clearTimeout(timer);
   const h = location.hash || '#/';
   if (h.startsWith('#/status/')) return status(decodeURIComponent(h.slice(9)));
+  if (h === '#/admin/prescriptions') return prescriptionsPage();
   if (h === '#/admin/billing') return billingPage();
   if (h === '#/admin/dev') return devManager();
   if (h === '#/admin') return admin();

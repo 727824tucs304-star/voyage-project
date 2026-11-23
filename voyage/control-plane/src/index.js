@@ -12,6 +12,7 @@ import { resumeBuilds, nextVersion } from './builds.js';
 import { billingRouter, runBillingJobs } from './admin-billing.js';
 import { archiveTenant, restoreTenant } from './lifecycle.js';
 import { requireAdmin, login, logout, limiter } from './admin-auth.js';
+import { prescriptionRouter } from './admin-prescriptions.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -111,6 +112,7 @@ app.post('/api/admin/tenants/:slug/restore', requireAdmin, wrap(async (req, res)
 }));
 
 app.use('/api/admin', requireAdmin, billingRouter);
+app.use('/api/admin', requireAdmin, prescriptionRouter);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
