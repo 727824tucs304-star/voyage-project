@@ -11,7 +11,7 @@ const clock = (s) => {
 const stamp = (sec) => (sec == null ? '' : ` <span class="ts">[${clock(sec)}]</span>`);
 const dateText = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d ?? '').slice(0, 10));
 const SECTOR_LABELS = { legal: 'Legal', sales: 'B2B sales', healthcare: 'Healthcare', financial: 'Financial advisory', hr: 'Recruitment and HR', general: 'General' };
-const CATEGORY_LABELS = { legal_intake: 'Legal client intake', internal_case: 'Internal case discussion', client_call: 'Client call', board: 'Board or leadership', other: 'Other' };
+const CATEGORY_LABELS = { legal_intake: 'Legal client intake', internal_case: 'Internal case discussion', client_call: 'Client call', board: 'Board or leadership', other: 'Other', healthcare: 'Healthcare', financial: 'Financial advisory', hr: 'Recruitment and HR' };
 const humanize = (k) => {
   const s = k.replace(/_/g, ' ');
   return s.charAt(0).toUpperCase() + s.slice(1);

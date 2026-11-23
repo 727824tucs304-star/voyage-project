@@ -7,6 +7,7 @@ import { Button, Card } from './pages.jsx';
 export const CATEGORY = {
   legal_intake: 'Legal client intake', internal_case: 'Internal case discussion',
   client_call: 'Client call', board: 'Board or leadership', other: 'Other',
+  healthcare: 'Healthcare', financial: 'Financial advisory', hr: 'Recruitment and HR',
 };
 export const STATUS = {
   draft: 'Draft', uploaded: 'Uploaded', queued: 'Waiting for transcription', transcribing: 'Transcribing',

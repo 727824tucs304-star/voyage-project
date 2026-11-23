@@ -173,3 +173,15 @@ ALTER TABLE meeting_analysis ADD COLUMN IF NOT EXISTS sector TEXT;
 ALTER TABLE meeting_analysis ADD COLUMN IF NOT EXISTS sector_fields JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE meeting_analysis ADD COLUMN IF NOT EXISTS flags JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE meeting_analysis ADD COLUMN IF NOT EXISTS review_notes JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+DO $$
+DECLARE c record;
+BEGIN
+  FOR c IN SELECT conname FROM pg_constraint
+           WHERE conrelid = 'meetings'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%legal_intake%'
+  LOOP
+    EXECUTE format('ALTER TABLE meetings DROP CONSTRAINT %I', c.conname);
+  END LOOP;
+  ALTER TABLE meetings ADD CONSTRAINT meetings_category_check
+    CHECK (category IN ('legal_intake','internal_case','client_call','board','other','healthcare','financial','hr'));
+END $$;

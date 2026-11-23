@@ -71,7 +71,7 @@ const GROUNDED_LISTS = new Set(['deadlines', 'medications_stated', 'decision_mak
 const GROUNDED_TEXT = new Set(['budget']);
 
 // Meeting categories map to a workflow. A meeting can also set its own sector.
-const CATEGORY_SECTOR = { legal_intake: 'legal', client_call: 'sales', internal_case: 'general', board: 'general', other: 'general' };
+const CATEGORY_SECTOR = { legal_intake: 'legal', client_call: 'sales', internal_case: 'general', board: 'general', other: 'general', healthcare: 'healthcare', financial: 'financial', hr: 'hr' };
 export const sectorFor = (meeting) => (meeting.sector && SECTORS[meeting.sector] ? meeting.sector : CATEGORY_SECTOR[meeting.category] || 'general');
 
 function activeProvider() {

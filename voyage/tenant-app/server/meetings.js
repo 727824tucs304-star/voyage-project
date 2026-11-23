@@ -6,7 +6,7 @@ import { checkRecordingHeaders, saveStream, recordingPath, removeMeetingFiles } 
 import { providerStatus } from './providers.js';
 import { buildReport } from './report.js';
 
-export const CATEGORIES = ['legal_intake', 'internal_case', 'client_call', 'board', 'other'];
+export const CATEGORIES = ['legal_intake', 'internal_case', 'client_call', 'board', 'other', 'healthcare', 'financial', 'hr'];
 export const STATUSES = ['draft', 'uploaded', 'queued', 'transcribing', 'analysing', 'completed', 'failed'];
 export const SECTOR_KEYS = ['legal', 'sales', 'healthcare', 'financial', 'hr', 'general'];
 const ACTIVE = "('queued','transcribing','analysing')";
