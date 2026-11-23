@@ -1,0 +1,5 @@
+
+# Terraform: local state and downloaded providers never go to GitHub
+*.tfstate
+*.tfstate.*
+.terraform/
