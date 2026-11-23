@@ -1,0 +1,47 @@
+# Runs automatically on every push and pull request.
+# Free for public GitHub repositories. Changes nothing on the AWS server.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Test Vespera
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Start PostgreSQL
+        run: |
+          sudo systemctl start postgresql
+          sudo systemctl status postgresql --no-pager
+
+      - name: Build the customer web app
+        working-directory: voyage/tenant-app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run the control-plane test suite (91 checks)
+        working-directory: voyage/control-plane
+        run: |
+          npm ci
+          # The test suite creates test databases as the postgres user, which needs root.
+          sudo env "PATH=$PATH" node test/run.mjs
+
+      - name: Keep the test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: /tmp/control.log
+          if-no-files-found: ignore
