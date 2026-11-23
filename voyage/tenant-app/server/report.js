@@ -40,7 +40,7 @@ li { margin: 3px 0; }
 table { width: 100%; border-collapse: collapse; font-family: Arial, Helvetica, sans-serif; font-size: 9.5pt; margin: 4px 0 8px; }
 th, td { border-bottom: 1px solid #e5e7eb; padding: 5px 6px; text-align: left; vertical-align: top; }
 th { background: #f3f4f6; color: #374151; font-weight: 700; border-top: 1px solid #d1d5db; }
-p.seg { text-align: left; font-size: 10pt; margin: 5px 0; }
+p.seg { text-align: justify; hyphens: auto; font-size: 10pt; margin: 5px 0; }
 .sign { font-family: Arial, Helvetica, sans-serif; font-size: 9.5pt; color: #374151; margin-top: 28px; padding-top: 8px; border-top: 1px solid #9ca3af; text-align: left; }
 @media print { body { margin: 0; max-width: none; } }
 `;
