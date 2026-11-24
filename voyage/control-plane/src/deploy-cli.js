@@ -2,6 +2,7 @@
 // Run inside the control container by GitHub Actions, through AWS Systems Manager:
 //   node src/deploy-cli.js <customer-slug> <version>
 // The existing health check and automatic rollback still apply.
+// Asking for the version a workspace already runs is a success: nothing is changed, so the run can be repeated safely.
 import { db } from './db.js';
 import { deployRecorded } from './deploy-history.js';
 
@@ -17,6 +18,11 @@ if (!/^[a-z0-9-]{2,40}$/.test(slug) || !/^v\d+$/.test(version)) await finish(2, 
 
 const { rows: [before] } = await db.query('SELECT status, version FROM tenants WHERE slug = $1', [slug]);
 if (!before) await finish(2, `no customer named ${slug}`);
+
+if (before.version === version && before.status === 'ready') {
+  await finish(0, `SUCCESS: ${slug} already runs ${version}. Nothing was changed.`);
+}
+
 console.log(`Deploying ${version} to ${slug} (currently ${before.version}, status ${before.status})`);
 
 try {
