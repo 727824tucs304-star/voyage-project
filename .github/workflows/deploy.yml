@@ -1,0 +1,71 @@
+# Controlled deployment of one customer to one image version.
+# Runs only when started by hand, only from main, and only after a reviewer approves the
+# "production" environment. Touches only the customer named in the inputs.
+name: Deploy to customer
+
+on:
+  workflow_dispatch:
+    inputs:
+      customer:
+        description: "Workspace name, for example adhoc"
+        required: true
+        type: string
+      version:
+        description: "Image version, for example v18"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.version }} to ${{ inputs.customer }}
+    runs-on: ubuntu-24.04
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 25
+    steps:
+      - name: Check inputs
+        env:
+          CUSTOMER: ${{ inputs.customer }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$CUSTOMER" =~ ^[a-z0-9-]{2,40}$ ]] || { echo "Invalid customer name"; exit 1; }
+          [[ "$VERSION" =~ ^v[0-9]+$ ]] || { echo "Invalid version"; exit 1; }
+
+      - name: Connect to AWS without stored keys
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Deploy through the control plane
+        env:
+          INSTANCE_ID: i-0fe75a403fc3723cc
+          CUSTOMER: ${{ inputs.customer }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy $VERSION to $CUSTOMER from GitHub run $GITHUB_RUN_ID" \
+            --parameters "{\"commands\":[\"sudo docker exec voyage-control node src/deploy-cli.js $CUSTOMER $VERSION\"]}" \
+            --query "Command.CommandId" --output text)
+          echo "Started command $CMD_ID"
+          for i in $(seq 1 90); do
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query "Status" --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in
+              Success|Failed|Cancelled|TimedOut) break ;;
+            esac
+            sleep 10
+          done
+          echo "----- server output -----"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query "StandardOutputContent" --output text
+          CODE=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query "ResponseCode" --output text)
+          echo "Exit code: $CODE"
+          [ "$CODE" = "0" ]
