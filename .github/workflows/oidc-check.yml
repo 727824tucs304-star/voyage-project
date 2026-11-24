@@ -1,0 +1,27 @@
+# Diagnostic only. Prints the identity GitHub presents to AWS (claims, not secrets) and changes nothing.
+name: OIDC identity check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - name: Print the identity claims AWS will see
+        run: |
+          RESPONSE=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+          TOKEN=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['value'])")
+          echo "$TOKEN" | cut -d. -f2 | python3 -c "
+          import sys, base64, json
+          s = sys.stdin.read().strip()
+          s += '=' * (-len(s) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(s))
+          for key in ['iss', 'aud', 'sub', 'repository', 'repository_owner', 'environment', 'ref', 'job_workflow_ref']:
+              print(f'{key} = {claims.get(key)}')
+          "
