@@ -1,18 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Mic, Palette, History, Settings, LogOut, Sparkles } from 'lucide-react';
+import { LayoutDashboard, Mic, Users, History, Settings, LogOut, Sparkles } from 'lucide-react';
 import { api, session } from './api.js';
 import { DEFAULT_THEME, ThemeContext } from './theme.js';
 import { LoginPage, SettingsPage } from './pages.jsx';
 import { OverviewPage, MeetingsPage, MeetingDetailPage } from './Vespera.jsx';
-import CustomizePage from './Customize.jsx';
+import TeamPage from './Team.jsx';
 import UpdatesPage from './Updates.jsx';
 
 const NAV = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/meetings', label: 'Meetings', icon: Mic },
   { to: '/updates', label: 'Updates', icon: History },
-  { to: '/branding', label: 'Branding', icon: Palette },
+  { to: '/team', label: 'Team', icon: Users },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
@@ -77,7 +77,7 @@ export default function App() {
             <Route path="/meetings" element={<MeetingsPage />} />
             <Route path="/meetings/:id" element={<MeetingDetailPage />} />
             <Route path="/updates" element={<UpdatesPage />} />
-            <Route path="/branding" element={<CustomizePage />} />
+            <Route path="/team" element={<TeamPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

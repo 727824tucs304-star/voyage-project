@@ -317,6 +317,67 @@ api.delete('/details/:id', wrap(async (req, res) => {
   res.status(204).end();
 }));
 
+// ---- Team: user management ----
+async function callerRole(req) {
+  const { rows } = await pool.query('SELECT role FROM users WHERE id = $1', [req.user.sub]);
+  return rows[0]?.role || null;
+}
+const adminOnly = (req, res, next) => {
+  callerRole(req)
+    .then((role) => (role === 'admin' ? next() : next(new HttpError(403, 'Only an administrator can manage users.'))))
+    .catch(next);
+};
+
+api.get('/users', wrap(async (req, res) => {
+  const { rows } = await pool.query('SELECT id, name, email, role, created_at FROM users ORDER BY created_at, id');
+  res.json(rows);
+}));
+
+api.post('/users', adminOnly, wrap(async (req, res) => {
+  const name = text(req.body, 'name', { max: 80, required: true });
+  const email = text(req.body, 'email', { max: 254, required: true }).toLowerCase();
+  const role = oneOf(req.body, 'role', ['admin', 'member'], 'member');
+  const password = req.body?.password;
+  if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
+    throw new HttpError(400, 'password must be 8-200 characters');
+  }
+  const hash = await bcrypt.hash(password, 12);
+  try {
+    const { rows } = await pool.query(
+      'INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role, created_at',
+      [name, email, hash, role]);
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') throw new HttpError(409, 'A user with that email already exists');
+    throw err;
+  }
+}));
+
+api.put('/users/:id/password', adminOnly, wrap(async (req, res) => {
+  const id = idParam(req);
+  const password = req.body?.password;
+  if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
+    throw new HttpError(400, 'password must be 8-200 characters');
+  }
+  const hash = await bcrypt.hash(password, 12);
+  const { rowCount } = await pool.query('UPDATE users SET password_hash = $2 WHERE id = $1', [id, hash]);
+  if (!rowCount) throw notFound();
+  res.json({ ok: true });
+}));
+
+api.delete('/users/:id', adminOnly, wrap(async (req, res) => {
+  const id = idParam(req);
+  if (id === Number(req.user.sub)) throw new HttpError(400, 'You cannot remove your own account');
+  const { rows: [target] } = await pool.query('SELECT role FROM users WHERE id = $1', [id]);
+  if (!target) throw notFound();
+  if (target.role === 'admin') {
+    const { rows: [count] } = await pool.query("SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin'");
+    if (count.n <= 1) throw new HttpError(400, 'A workspace must keep at least one administrator');
+  }
+  await pool.query('DELETE FROM users WHERE id = $1', [id]);
+  res.status(204).end();
+}));
+
 api.use(meetingsRouter);
 api.use(themePrivate);
 

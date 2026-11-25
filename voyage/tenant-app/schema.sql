@@ -185,3 +185,5 @@ BEGIN
   ALTER TABLE meetings ADD CONSTRAINT meetings_category_check
     CHECK (category IN ('legal_intake','internal_case','client_call','board','other','healthcare','financial','hr'));
 END $$;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin','member'));

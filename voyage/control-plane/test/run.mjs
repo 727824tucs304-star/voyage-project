@@ -1165,6 +1165,42 @@ await check('repeated wrong passwords for one account are limited, and other acc
   clearFailedSignIns('a@example.com');
 });
 
+console.log('\n[23] Team: user management');
+const TEAM_EMAIL = 'member@acme.test';
+const TEAM_PASSWORD = 'member-pass-1';
+let memberId = null;
+await check('an administrator can add a team member, and the member can sign in', async () => {
+  const made = await tenantApi(acmeSlug(), 'POST', '/users', { token: acme(), body: { name: 'Mina Member', email: TEAM_EMAIL, password: TEAM_PASSWORD, role: 'member' } });
+  assert.equal(made.status, 201);
+  assert.equal(made.data.role, 'member');
+  memberId = made.data.id;
+  const signIn = await tenantApi(acmeSlug(), 'POST', '/auth/login', { body: { email: TEAM_EMAIL, password: TEAM_PASSWORD } });
+  assert.equal(signIn.status, 200);
+});
+await check('a member cannot add users, and an administrator can reset a member password', async () => {
+  const memberLogin = await tenantApi(acmeSlug(), 'POST', '/auth/login', { body: { email: TEAM_EMAIL, password: TEAM_PASSWORD } });
+  const denied = await tenantApi(acmeSlug(), 'POST', '/users', { token: memberLogin.data.token, body: { name: 'X', email: 'x@acme.test', password: 'long-enough-1' } });
+  assert.equal(denied.status, 403);
+  const reset = await tenantApi(acmeSlug(), 'PUT', `/users/${memberId}/password`, { token: acme(), body: { password: 'new-member-pass-2' } });
+  assert.equal(reset.status, 200);
+  const oldFails = await tenantApi(acmeSlug(), 'POST', '/auth/login', { body: { email: TEAM_EMAIL, password: TEAM_PASSWORD } });
+  assert.equal(oldFails.status, 401);
+  const newWorks = await tenantApi(acmeSlug(), 'POST', '/auth/login', { body: { email: TEAM_EMAIL, password: 'new-member-pass-2' } });
+  assert.equal(newWorks.status, 200);
+});
+await check('the team list shows members, an administrator cannot remove themselves, and a member can be removed', async () => {
+  const list = await tenantApi(acmeSlug(), 'GET', '/users', { token: acme() });
+  assert.equal(list.status, 200);
+  assert.ok(list.data.some((u) => u.id === memberId));
+  const me = (await tenantApi(acmeSlug(), 'GET', '/auth/me', { token: acme() })).data.user.id;
+  const self = await tenantApi(acmeSlug(), 'DELETE', `/users/${me}`, { token: acme() });
+  assert.equal(self.status, 400);
+  const gone = await tenantApi(acmeSlug(), 'DELETE', `/users/${memberId}`, { token: acme() });
+  assert.equal(gone.status, 204);
+  const after = await tenantApi(acmeSlug(), 'GET', '/users', { token: acme() });
+  assert.ok(!after.data.some((u) => u.id === memberId));
+});
+
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);
 if (failed) console.log('\n--- control plane log (tail) ---\n' + controlLog.slice(-2500));
 
