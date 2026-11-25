@@ -345,48 +345,22 @@ await check('each tenant admin can sign in; wrong password is rejected', async (
   }
 });
 await check('protected routes require a token', async () => {
-  const r = await tenantApi(slugs['Acme Travel'], 'GET', '/trips');
+  const r = await tenantApi(slugs['Acme Travel'], 'GET', '/meetings');
   assert.equal(r.status, 401);
 });
 
 const acme = () => tokens['Acme Travel'];
 const acmeSlug = () => slugs['Acme Travel'];
 const ids = {};
-await check('destinations, trips, itinerary and expenses: create, read, update, delete', async () => {
-  const d = await tenantApi(acmeSlug(), 'POST', '/destinations', { token: acme(), body: { name: 'Lisbon', country: 'Portugal' } });
-  assert.equal(d.status, 201);
-  ids.dest = d.data.id;
-  const t = await tenantApi(acmeSlug(), 'POST', '/trips', { token: acme(), body: {
-    title: 'Lisbon spring', destination_id: ids.dest, start_date: '2099-04-01', end_date: '2099-04-07', budget: 2500, status: 'planned' } });
-  assert.equal(t.status, 201, JSON.stringify(t.data));
-  ids.trip = t.data.id;
-  const bad = await tenantApi(acmeSlug(), 'POST', '/trips', { token: acme(), body: { title: 'x', start_date: '2099-05-10', end_date: '2099-05-01' } });
-  assert.equal(bad.status, 400, 'end before start rejected');
-
-  const e1 = await tenantApi(acmeSlug(), 'POST', `/trips/${ids.trip}/events`, { token: acme(), body: {
-    title: 'Dinner at Time Out', location: 'Cais do Sodre', event_date: '2099-04-02', event_time: '20:30', category: 'meal', estimated_cost: 60 } });
-  const e0 = await tenantApi(acmeSlug(), 'POST', `/trips/${ids.trip}/events`, { token: acme(), body: {
-    title: 'Fly in', event_date: '2099-04-01', event_time: '08:00', category: 'transport', estimated_cost: 300 } });
-  assert.equal(e1.status, 201);
-  assert.equal(e0.status, 201);
-  const list = await tenantApi(acmeSlug(), 'GET', `/trips/${ids.trip}/events`, { token: acme() });
-  assert.deepEqual(list.data.map((e) => e.title), ['Fly in', 'Dinner at Time Out'], 'chronological order');
-  const upd = await tenantApi(acmeSlug(), 'PUT', `/events/${e0.data.id}`, { token: acme(), body: {
-    title: 'Fly in (delayed)', event_date: '2099-04-01', event_time: '10:00', category: 'transport', estimated_cost: 320 } });
-  assert.equal(upd.data.title, 'Fly in (delayed)');
-  await tenantApi(acmeSlug(), 'DELETE', `/events/${e1.data.id}`, { token: acme() });
-
-  const x = await tenantApi(acmeSlug(), 'POST', '/expenses', { token: acme(), body: {
-    description: 'Train tickets', amount: 45.5, category: 'transport', expense_date: '2099-04-02', trip_id: ids.trip } });
-  assert.equal(x.status, 201);
-  ids.expense = x.data.id;
-  const stats = await tenantApi(acmeSlug(), 'GET', '/dashboard/stats', { token: acme() });
-  assert.equal(stats.data.total_trips, 1);
-  assert.equal(stats.data.upcoming_trips, 1);
-  assert.equal(stats.data.total_expenses, 45.5);
-  const trip = await tenantApi(acmeSlug(), 'PUT', `/trips/${ids.trip}`, { token: acme(), body: {
-    title: 'Lisbon spring', destination_id: ids.dest, start_date: '2099-04-01', end_date: '2099-04-07', budget: 2600, status: 'ongoing' } });
-  assert.equal(trip.data.budget, 2600);
+await check('meetings: create, validate and update for the administrator', async () => {
+  const m = await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: 'Client intake', category: 'legal_intake', meeting_date: '2099-04-01' } });
+  assert.equal(m.status, 201, JSON.stringify(m.data));
+  ids.meeting = m.data.id;
+  const bad = await tenantApi(acmeSlug(), 'POST', '/meetings', { token: acme(), body: { title: '', meeting_date: '2099-04-01' } });
+  assert.equal(bad.status, 400, 'empty title rejected');
+  const upd = await tenantApi(acmeSlug(), 'PUT', `/meetings/${ids.meeting}`, { token: acme(), body: { title: 'Client intake (updated)', category: 'legal_intake', meeting_date: '2099-04-01' } });
+  assert.equal(upd.status, 200, JSON.stringify(upd.data));
+  assert.equal(upd.data.title, 'Client intake (updated)');
 });
 await check('settings: company name and admin profile update', async () => {
   const c = await tenantApi(acmeSlug(), 'PUT', '/settings/company', { token: acme(), body: { name: 'Acme Travel Ltd' } });
@@ -399,33 +373,33 @@ await check('data persists after a container restart (stop + start, same databas
   await dockerApi('POST', `/containers/voyage-tenant-${acmeSlug()}/stop`);
   await dockerApi('POST', `/containers/voyage-tenant-${acmeSlug()}/start`);
   await waitFor(async () => (await tenantApi(acmeSlug(), 'GET', '/health')).status === 200, 'acme restarted');
-  const list = await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() });
+  const list = await tenantApi(acmeSlug(), 'GET', '/meetings', { token: acme() });
   assert.equal(list.status, 200);
   assert.equal(list.data.length, 1);
-  assert.equal(list.data[0].title, 'Lisbon spring');
+  assert.equal(list.data[0].title, 'Client intake (updated)');
 });
 
 console.log('\n[5] Five tenants: data isolation');
 await check('each tenant creates a trip; each sees only its own data', async () => {
   for (const c of COMPANIES) {
     const slug = slugs[c.company];
-    const r = await tenantApi(slug, 'POST', '/trips', { token: tokens[c.company], body: {
-      title: `Trip for ${slug}`, start_date: '2099-06-01', end_date: '2099-06-05' } });
+    const r = await tenantApi(slug, 'POST', '/meetings', { token: tokens[c.company], body: {
+      title: `Meeting for ${slug}`, category: 'other', meeting_date: '2099-06-01' } });
     assert.equal(r.status, 201);
   }
   for (const c of COMPANIES) {
     const slug = slugs[c.company];
-    const list = await tenantApi(slug, 'GET', '/trips', { token: tokens[c.company] });
+    const list = await tenantApi(slug, 'GET', '/meetings', { token: tokens[c.company] });
     const titles = list.data.map((t) => t.title);
-    assert.ok(titles.includes(`Trip for ${slug}`), `${slug} sees its own trip`);
+    assert.ok(titles.includes(`Meeting for ${slug}`), `${slug} sees its own trip`);
     for (const other of Object.values(slugs)) {
-      if (other !== slug) assert.ok(!titles.includes(`Trip for ${other}`), `${slug} must not see ${other}'s trip`);
+      if (other !== slug) assert.ok(!titles.includes(`Meeting for ${other}`), `${slug} must not see ${other}'s trip`);
     }
   }
 });
 await check('a token issued by one tenant is rejected by every other tenant', async () => {
   for (const other of COMPANIES.slice(1)) {
-    const r = await tenantApi(slugs[other.company], 'GET', '/trips', { token: acme() });
+    const r = await tenantApi(slugs[other.company], 'GET', '/meetings', { token: acme() });
     assert.equal(r.status, 401, `Acme token accepted by ${other.company}`);
   }
 });
@@ -435,7 +409,7 @@ for (const slug of Object.values(slugs)) {
   const r = await dockerApi('GET', `/containers/voyage-tenant-${slug}/json`);
   pids[slug] = r.data.State.Pid;
 }
-const acmeTripsBefore = (await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length;
+const acmeMeetingsBefore = (await tenantApi(acmeSlug(), 'GET', '/meetings', { token: acme() })).data.length;
 
 await check('deploying an unknown image is refused (422) and an invalid version is refused (400)', async () => {
   const unknown = await ctl('POST', `/api/admin/tenants/${acmeSlug()}/deploy`, { ...adminOpts, body: { version: 'v9' } });
@@ -453,9 +427,9 @@ await check('Client A (Acme) is upgraded to v2: container replaced, database pre
   await waitAdminReady(acmeSlug(), 'v2');
   const h = await tenantApi(acmeSlug(), 'GET', '/health');
   assert.equal(h.data.version, 'v2');
-  const trips = await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() });
+  const trips = await tenantApi(acmeSlug(), 'GET', '/meetings', { token: acme() });
   assert.equal(trips.status, 200);
-  assert.equal(trips.data.length, acmeTripsBefore, 'trips preserved across the container replacement');
+  assert.equal(trips.data.length, acmeMeetingsBefore, 'trips preserved across the container replacement');
   const newPid = (await dockerApi('GET', `/containers/voyage-tenant-${acmeSlug()}/json`)).data.State.Pid;
   assert.notEqual(newPid, pids[acmeSlug()], 'Acme container was recreated');
 });
@@ -480,15 +454,15 @@ await check('the admin view reports Client A = v2 and the others = v1', async ()
 await check('Acme sign-in still works on v2 and existing data is intact', async () => {
   const r = await tenantApi(acmeSlug(), 'POST', '/auth/login', { body: { email: 'ana@acme.test', password: PASSWORD } });
   assert.equal(r.status, 200);
-  const exp = await tenantApi(acmeSlug(), 'GET', '/expenses', { token: r.data.token });
-  assert.equal(exp.data.length, 1);
+  const exp = await tenantApi(acmeSlug(), 'GET', '/meetings', { token: r.data.token });
+  assert.equal(exp.data.length, acmeMeetingsBefore);
 });
 await check('rollback restores Client A to v1 with its data still in place', async () => {
   const r = await ctl('POST', `/api/admin/tenants/${acmeSlug()}/rollback`, adminOpts);
   assert.equal(r.status, 202);
   await waitAdminReady(acmeSlug(), 'v1');
-  const trips = await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() });
-  assert.equal(trips.data.length, acmeTripsBefore);
+  const trips = await tenantApi(acmeSlug(), 'GET', '/meetings', { token: acme() });
+  assert.equal(trips.data.length, acmeMeetingsBefore);
 });
 await check('after rollback the other four tenants are still untouched', async () => {
   for (const c of COMPANIES.slice(1)) {
@@ -529,7 +503,7 @@ const sameOthers = async (before) => {
 let commit1 = null, commit2 = null, v3 = null, v4 = null;
 
 await check('Client A moves to Vespera V1 before the GitHub workflow runs (data kept)', async () => {
-  const trips = (await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length;
+  const trips = (await tenantApi(acmeSlug(), 'GET', '/meetings', { token: acme() })).data.length;
   const r = await ctl('POST', `/api/admin/tenants/${acmeSlug()}/migrate-to-vespera`, { ...adminOpts, body: { version: 'v1' } });
   assert.equal(r.status, 202, JSON.stringify(r.data));
   await waitFor(async () => {
@@ -537,7 +511,7 @@ await check('Client A moves to Vespera V1 before the GitHub workflow runs (data 
     if (row.status === 'failed') throw new Error(`migration failed: ${row.errorMessage}`);
     return row.status === 'ready' && row.product === 'vespera' && row.version === 'v1';
   }, 'acme on Vespera V1', 180000);
-  assert.equal((await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length, trips);
+  assert.equal((await tenantApi(acmeSlug(), 'GET', '/meetings', { token: acme() })).data.length, trips);
 });
 await check('VS Code change: a developer commits and pushes to GitHub', async () => {
   execFileSync('bash', ['-c', `git clone -q "${REMOTE}" "${DEV}" && cd "${DEV}" && git config user.name "Dev Person" && git config user.email dev@example.test`]);
@@ -624,7 +598,7 @@ await check('deploying the new commit leaves Client A up to date; other clients 
   await sameOthers(others);
 });
 await check('rolling back Client A to an earlier version is recorded and keeps its trips', async () => {
-  const trips = (await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length;
+  const trips = (await tenantApi(acmeSlug(), 'GET', '/meetings', { token: acme() })).data.length;
   const after = await lastDeploymentId();
   const r = await ctl('POST', '/api/admin/releases/rollback', { ...adminOpts, body: { slug: acmeSlug(), version: v3 } });
   assert.equal(r.status, 202, JSON.stringify(r.data));
@@ -632,7 +606,7 @@ await check('rolling back Client A to an earlier version is recorded and keeps i
   assert.equal(dep.kind, 'rollback');
   assert.equal(dep.status, 'succeeded', dep.detail);
   assert.equal((await tenantApi(acmeSlug(), 'GET', '/health')).data.version, v3);
-  assert.equal((await tenantApi(acmeSlug(), 'GET', '/trips', { token: acme() })).data.length, trips);
+  assert.equal((await tenantApi(acmeSlug(), 'GET', '/meetings', { token: acme() })).data.length, trips);
 });
 await check("Client A's Updates page lists the update and the rollback, newest first", async () => {
   const r = await tenantApi(acmeSlug(), 'GET', '/releases', { token: acme() });
@@ -751,33 +725,7 @@ await check('billing is admin-only; clients cannot reach it and bad input is ref
   assert.equal((await ctl('GET', '/api/admin/billing/history?slug=../etc', adminOpts)).status, 400);
 });
 
-console.log('\n[10] Trip details, CrewRoute defaults and INR');
-await check('trip details: stays, transport, contacts and notes can be added, listed and removed', async () => {
-  const base = `/trips/${ids.trip}/details`;
-  let r = await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'stay', title: 'Hotel Alfama', reference: 'HA123', starts_on: '2099-04-01', ends_on: '2099-04-07', amount: 12000 } });
-  assert.equal(r.status, 201, JSON.stringify(r.data));
-  const detailId = r.data.id;
-  r = await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'contact', title: 'Asha', phone: '+91 98765 43210' } });
-  assert.equal(r.status, 201, JSON.stringify(r.data));
-  const list = await tenantApi(acmeSlug(), 'GET', base, { token: acme() });
-  assert.equal(list.status, 200);
-  assert.ok(list.data.some((d) => d.title === 'Hotel Alfama' && d.reference === 'HA123'));
-  assert.ok(list.data.some((d) => d.kind === 'contact' && d.phone === '+91 98765 43210'));
-  const del = await tenantApi(acmeSlug(), 'DELETE', `/details/${detailId}`, { token: acme() });
-  assert.equal(del.status, 204);
-});
-await check('trip details are validated and private to the crew that owns the trip', async () => {
-  const base = `/trips/${ids.trip}/details`;
-  assert.equal((await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'hotel', title: 'x' } })).status, 400);
-  assert.equal((await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'contact', title: 'x', phone: 'call-me' } })).status, 400);
-  assert.equal((await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'stay', title: 'x', starts_on: '2099-05-10', ends_on: '2099-05-01' } })).status, 400);
-  const secret = await tenantApi(acmeSlug(), 'POST', base, { token: acme(), body: { kind: 'note', title: 'Secret Acme note' } });
-  assert.equal(secret.status, 201);
-  // Bluesky's server answers only from Bluesky's own database, so Acme's entry must never appear there.
-  const other = await tenantApi(slugs['Bluesky Tours'], 'GET', base, { token: tokens['Bluesky Tours'] });
-  assert.ok(!JSON.stringify(other.data ?? '').includes('Secret Acme note'), 'another crew cannot see this trip');
-  await tenantApi(acmeSlug(), 'DELETE', `/details/${secret.data.id}`, { token: acme() });
-});
+console.log('\n[10] Workspace defaults');
 await check('the workspace name defaults to Vespera with the violet theme', async () => {
   const r = await tenantApi(acmeSlug(), 'GET', '/theme');
   assert.equal(r.data.app_name, 'Vespera');
@@ -865,7 +813,7 @@ await check('a legacy Voyage workspace cannot take Vespera builds until it is mi
 });
 await check('migrating a client to Vespera V1 keeps its data and leaves other clients untouched', async () => {
   const cedar = slugs['Cedar Trips'];
-  const trips = (await tenantApi(cedar, 'GET', '/trips', { token: tokens['Cedar Trips'] })).data.length;
+  const trips = (await tenantApi(cedar, 'GET', '/meetings', { token: tokens['Cedar Trips'] })).data.length;
   const others = await snapshot(otherSlugs().filter((s) => s !== cedar));
   const pidBefore = (await dockerApi('GET', `/containers/voyage-tenant-${cedar}/json`)).data.State.Pid;
   const r = await ctl('POST', `/api/admin/tenants/${cedar}/migrate-to-vespera`, { ...adminOpts, body: { version: 'v1' } });
@@ -877,7 +825,7 @@ await check('migrating a client to Vespera V1 keeps its data and leaves other cl
   }, 'cedar migrated', 180000);
   assert.equal((await tenantApi(cedar, 'GET', '/health')).data.version, 'v1');
   assert.notEqual((await dockerApi('GET', `/containers/voyage-tenant-${cedar}/json`)).data.State.Pid, pidBefore);
-  assert.equal((await tenantApi(cedar, 'GET', '/trips', { token: tokens['Cedar Trips'] })).data.length, trips);
+  assert.equal((await tenantApi(cedar, 'GET', '/meetings', { token: tokens['Cedar Trips'] })).data.length, trips);
   for (const s of Object.keys(others)) {
     const now = await snapshot([s]);
     assert.equal(now[s].pid, others[s].pid, `${s} restarted`);
@@ -907,7 +855,7 @@ await check('restoring an archived workspace brings it back with its data', asyn
   const active = (await ctl('GET', '/api/admin/tenants', adminOpts)).data.map((t) => t.slug);
   assert.ok(active.includes(cedar));
   await waitFor(async () => (await tenantApi(cedar, 'GET', '/health')).status === 200, 'cedar back');
-  assert.equal((await tenantApi(cedar, 'GET', '/trips', { token: tokens['Cedar Trips'] })).status, 200);
+  assert.equal((await tenantApi(cedar, 'GET', '/meetings', { token: tokens['Cedar Trips'] })).status, 200);
 });
 await check('registration still provisions a new isolated workspace after archiving', async () => {
   const r = await ctl('POST', '/api/register', { body: { companyName: 'Post Cleanup Co', adminName: 'Admin Two', email: 'ops@postcleanup.test', password: PASSWORD } });
