@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { pool } from './db.js';
 import { requireAuth, sign } from './auth.js';
+import { signInBlocked, recordFailedSignIn, clearFailedSignIns } from './signin-limit.js';
 import { HttpError, text, number, integer, date, time, oneOf } from './validate.js';
 import { meetingsRouter } from './meetings.js';
 import { themePublic, themePrivate } from './theme.js';
@@ -102,11 +103,16 @@ api.post('/auth/login', wrap(async (req, res) => {
   if (typeof password !== 'string' || !password || password.length > 200) {
     throw new HttpError(400, 'password is required');
   }
+  if (signInBlocked(email)) {
+    throw new HttpError(429, 'Too many failed sign-in attempts. Wait 15 minutes and try again.');
+  }
   const { rows } = await pool.query('SELECT id, name, email, password_hash FROM users WHERE email = $1', [email]);
   const user = rows[0];
   if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+    recordFailedSignIn(email);
     throw new HttpError(401, 'Invalid email or password');
   }
+  clearFailedSignIns(email);
   res.json({ token: sign(user), user: { id: user.id, name: user.name, email: user.email } });
 }));
 

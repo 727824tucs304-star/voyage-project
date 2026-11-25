@@ -1152,6 +1152,19 @@ await check('the AWS account view works without choosing a customer, and needs a
   assert.equal(anon.status, 401);
 });
 
+console.log('\n[22] Customer sign-in limit');
+await check('repeated wrong passwords for one account are limited, and other accounts are unaffected', async () => {
+  const { signInBlocked, recordFailedSignIn, clearFailedSignIns, SIGNIN_MAX_FAILURES } = await import('../../tenant-app/server/signin-limit.js');
+  const t0 = 1_000_000;
+  for (let i = 0; i < SIGNIN_MAX_FAILURES - 1; i++) recordFailedSignIn('a@example.com', t0);
+  assert.equal(signInBlocked('a@example.com', t0), false, 'not blocked before the limit');
+  recordFailedSignIn('a@example.com', t0);
+  assert.equal(signInBlocked('a@example.com', t0), true, 'blocked at the limit');
+  assert.equal(signInBlocked('b@example.com', t0), false, 'another account is not affected');
+  assert.equal(signInBlocked('a@example.com', t0 + 16 * 60 * 1000), false, 'unblocked after 15 minutes');
+  clearFailedSignIns('a@example.com');
+});
+
 console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);
 if (failed) console.log('\n--- control plane log (tail) ---\n' + controlLog.slice(-2500));
 
